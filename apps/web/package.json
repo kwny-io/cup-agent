@@ -1,0 +1,26 @@
+{
+  "name": "@cup/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "前端:卡通杯部件 + 数据看板。窄屏 Tab / 宽屏悬浮。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test --test-reporter=spec \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@cup/contract": "*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "tailwindcss": "^4.1.18",
+    "vite": "^7.2.4"
+  }
+}

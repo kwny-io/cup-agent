@@ -1,0 +1,15 @@
+{
+  "name": "@cup/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "后端:ingest 适配层 → 事件管线(双源融合)→ Store → REST/WS。只认契约,不认链路。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@cup/contract": "*",
+    "mqtt": "^5.16.0",
+    "ws": "^8.18.3"
+  }
+}

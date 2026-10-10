@@ -1,0 +1,60 @@
+@import 'tailwindcss';
+
+/*
+ * 主题 token —— 暖系青蓝 · 定稿方案「C · 奶油」(D3,2026-10-08 定)。
+ *
+ * 基调:底色偏暖米白、青蓝压低成灰青、暖橙像奶盖 —— 整体最软最暖。
+ * 只改这一处即可全局换色,组件里禁止写死颜色。
+ *
+ * 命名: --cup-<用途>-<深浅>
+ *   mist  最浅底    deep  最深字     water 水/主色     warm  暖橙(热水/强调)
+ *
+ * 注:水温色阶(凉青→热橙)在 src/lib/color.ts,那是**物理编码**不是界面色板,
+ *     不受本方案影响。
+ */
+@theme {
+  /* 底色:偏暖的米白(奶油),不用纯白冷灰 */
+  --color-cup-mist: #f7f6f0;
+  --color-cup-foam: #e9eee7;
+  --color-cup-veil: #d3e2df;
+
+  /* 青蓝主family(水/杯身)—— 压低的灰青 */
+  --color-cup-sky: #8ec9c4;
+  --color-cup-aqua: #4fa8a8;
+  --color-cup-deep: #2f6b66;
+
+  /* 暖橙(热水 / 强调 / 达标)—— 奶盖色 */
+  --color-cup-warm: #f0a875;
+  --color-cup-ember: #d4813f;
+
+  /* 文字 */
+  --color-cup-ink: #3a4a44;
+  --color-cup-ink-soft: #6d7a74;
+
+  /* 圆角 / 阴影统一,卡通感靠大圆角 */
+  --radius-cup: 1.25rem;
+  --radius-cup-lg: 2rem;
+
+  --font-sans:
+    ui-rounded, 'Nunito', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-cup-mist);
+  color: var(--color-cup-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 悬浮杯拖动时禁止选中文本 */
+body.cup-dragging {
+  user-select: none;
+  cursor: grabbing;
+}

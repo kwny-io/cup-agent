@@ -1,0 +1,26 @@
+{
+  "name": "cup-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "智能水杯 — 软件侧(契约 / 模拟器 / 后端 / 前端)",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit --pretty && tsc -p apps/web/tsconfig.json --noEmit",
+    "test": "node --test --test-reporter=spec \"apps/simulator/test/*.test.ts\" \"apps/server/test/*.test.ts\"",
+    "sim": "node apps/simulator/src/cli.ts",
+    "server": "node apps/server/src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.1",
+    "@types/ws": "^8.18.1",
+    "aedes": "^1.2.0",
+    "typescript": "^5.9.3"
+  }
+}

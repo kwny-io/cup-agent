@@ -1,0 +1,12 @@
+# 杯盖默认配置(ESP32-S3)。idf.py set-target esp32s3 会用这份做初始值。
+CONFIG_IDF_TARGET="esp32s3"
+
+# 4MB flash / 单 app 分区 —— 最小 bring-up 够用。
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+
+# Wi-Fi 省电:杯盖是电池设备,modem sleep 默认开。
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=y
+
+# 日志等级:默认 INFO,联调排障可临时调 DEBUG。
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

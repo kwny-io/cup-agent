@@ -1,0 +1,15 @@
+{
+  "name": "@cup/simulator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "假杯子:假杯盖 + 假底座 + 行为脚本 + 时间加速。顶替硬件,走同一份契约。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@cup/contract": "*",
+    "mqtt": "^5.16.0",
+    "ws": "^8.18.3"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@cup/contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "四方(固件/后端/前端/模拟器)共享的数据契约 —— 唯一真相源",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.1.12"
+  }
+}

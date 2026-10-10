@@ -1,0 +1,67 @@
+menu "Cup Device(杯子固件 · 盖与底座共用)"
+
+    menu "网络与 broker"
+
+        config CUP_WIFI_SSID
+            string "Wi-Fi SSID"
+            default ""
+            help
+                杯盖要连的 Wi-Fi 名。留空则启动后只打印告警、不进联网(便于先验证构建)。
+
+        config CUP_WIFI_PASSWORD
+            string "Wi-Fi 密码"
+            default ""
+            help
+                留空 = 开放网络。
+
+        config CUP_MQTT_URI
+            string "MQTT broker URI"
+            default "mqtt://192.168.1.10:1883"
+            help
+                例如 mqtt://192.168.1.10:1883。真机远程部署应换 mqtts:// 并配凭据(风险 R13)。
+
+        config CUP_USE_BLE_PROV
+            bool "启用 BLE 配网(首次用手机 App 发 Wi-Fi 凭据)"
+            default n
+            help
+                关(默认)= 直接用上面写死的 SSID/密码连 Wi-Fi(调试最省事)。
+                开 = 开机先查 NVS:已有凭据就直接连;没有则起 BLE 等手机 App 发凭据,
+                成功后凭据落 NVS、掉电不丢,之后不再需要 App。
+
+                生产应改用 Security 2(证书)+ POP,现为 Security 1(POP 空,风险 R13)。
+
+    endmenu
+
+    menu "设备身份(与契约 §2 的 device_id / cup_id 正则一致)"
+
+        config CUP_DEVICE_ID
+            string "本设备 device_id"
+            default "lid-A1B2C3"
+            help
+                形如 lid-XXXXXX,只允许大写字母与数字。topic 键 = 这个 id。
+
+        config CUP_CUP_ID
+            string "逻辑杯 cup_id"
+            default "cup-A1B2C3"
+            help
+                形如 cup-XXXXXX。同一只杯子的盖与底座共用一个 cup_id。
+
+    endmenu
+
+    menu "上报节奏"
+
+        config CUP_REPORT_MS
+            int "常规档上报间隔(ms)"
+            default 300000
+            help
+                契约 §6.5 默认 5 分钟(300000)。
+
+        config CUP_SAMPLE_MS
+            int "采样间隔(ms)"
+            default 1000
+            help
+                本地采样/判定周期。上报是把这段时间内的遥测 + 事件打包发出去。
+
+    endmenu
+
+endmenu
