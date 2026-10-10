@@ -2,6 +2,7 @@
   "name": "@cup/server",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "后端:ingest 适配层 → 事件管线(双源融合)→ Store → REST/WS。只认契约,不认链路。",
   "exports": {

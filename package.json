@@ -2,6 +2,11 @@
   "name": "cup-agent",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kwny-io/cup-agent.git"
+  },
   "type": "module",
   "description": "智能水杯 — 软件侧(契约 / 模拟器 / 后端 / 前端)",
   "engines": {

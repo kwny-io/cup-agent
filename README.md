@@ -12,7 +12,7 @@ apps/server         后端:ingest 适配层 → 事件管线(双源融合)→ St
 
 ```bash
 npm install
-npm test          # 151 个测试:契约 + 模拟器行为 + 后端管线/验收/性格层/对话/画像蒸馏/MQTT/API
+npm test          # 178 个测试:契约 + 模拟器行为 + 后端管线/验收/性格层/对话/画像蒸馏/MQTT/API
 npm run sim       # 跑典型一天(默认 60× 加速)
 npm run server    # 起后端 API(:8788)
 ```
@@ -92,5 +92,9 @@ node apps/simulator/src/cli.ts --quiet                  # 只输出事件
 见桌面文档《plan.md》。当前完成 **M0**(契约冻结 + 模拟器)、**M1**(后端骨架)、
 **M2**(前端外壳 + 看板,已接后端)、**M3**(卡通杯 + 水波物理,英雄功能成型)、
 **M4**(性格层 LLM + 战报)、**M5-对话**(软件线:问杯子 / 记忆 / 主动开口)。
-**M5 真机 bring-up**(杯盖固件 `firmware/lid/`,源码就绪、宿主单测 100 条全绿,**待真板编译烧录**)
+**M5 真机 bring-up**(杯盖固件 `firmware/lid/`,源码就绪、宿主单测 17 组 405 条全绿,**待真板编译烧录**)
 与 **M6 底座**属硬件线,按契约并行推进。
+
+## License
+
+[Apache License 2.0](LICENSE) © 2026 kwny-io. 详见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

@@ -2,6 +2,7 @@
   "name": "@cup/simulator",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "假杯子:假杯盖 + 假底座 + 行为脚本 + 时间加速。顶替硬件,走同一份契约。",
   "exports": {

@@ -2,6 +2,7 @@
   "name": "@cup/web",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "前端:卡通杯部件 + 数据看板。窄屏 Tab / 宽屏悬浮。",
   "scripts": {
