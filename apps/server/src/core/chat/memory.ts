@@ -24,15 +24,15 @@ export interface ChatTurnRecord {
 }
 
 export interface ChatStore {
-  appendTurn(t: ChatTurnRecord): void;
+  appendTurn(t: ChatTurnRecord): Promise<void>;
   /** 最近 N 轮(旧→新),按条数与字节双限 */
-  recentTurns(cupId: string, limit: number): ChatTurnRecord[];
+  recentTurns(cupId: string, limit: number): Promise<ChatTurnRecord[]>;
   /** 长期画像文本;没有 → null(读端已接:见 agent.ts 的 systemPrompt / 数字守卫) */
-  profile(cupId: string): string | null;
-  setProfile(cupId: string, text: string): void;
+  profile(cupId: string): Promise<string | null>;
+  setProfile(cupId: string, text: string): Promise<void>;
   /** 上次画像蒸馏的时刻(ms);从未蒸过 → 0(distill.ts 据此判"攒够新轮没") */
-  lastDistilledAt(cupId: string): number;
-  setLastDistilledAt(cupId: string, ts: number): void;
+  lastDistilledAt(cupId: string): Promise<number>;
+  setLastDistilledAt(cupId: string, ts: number): Promise<void>;
   /** 落盘(内存实现是 no-op);app.close() 时调 */
   flush(): Promise<void>;
 }
@@ -69,27 +69,27 @@ export class MemoryChatStore implements ChatStore {
   private profiles = new Map<string, string>();
   private distilledAt = new Map<string, number>();
 
-  appendTurn(t: ChatTurnRecord): void {
+  async appendTurn(t: ChatTurnRecord): Promise<void> {
     this.turns.set(t.cup_id, capTurns(this.turns.get(t.cup_id) ?? [], t));
   }
 
-  recentTurns(cupId: string, limit: number): ChatTurnRecord[] {
+  async recentTurns(cupId: string, limit: number): Promise<ChatTurnRecord[]> {
     return windowTurns(this.turns.get(cupId) ?? [], limit);
   }
 
-  profile(cupId: string): string | null {
+  async profile(cupId: string): Promise<string | null> {
     return this.profiles.get(cupId) ?? null;
   }
 
-  setProfile(cupId: string, text: string): void {
+  async setProfile(cupId: string, text: string): Promise<void> {
     this.profiles.set(cupId, text);
   }
 
-  lastDistilledAt(cupId: string): number {
+  async lastDistilledAt(cupId: string): Promise<number> {
     return this.distilledAt.get(cupId) ?? 0;
   }
 
-  setLastDistilledAt(cupId: string, ts: number): void {
+  async setLastDistilledAt(cupId: string, ts: number): Promise<void> {
     this.distilledAt.set(cupId, ts);
   }
 

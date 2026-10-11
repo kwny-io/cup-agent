@@ -43,7 +43,7 @@ test('PUT /goal:越界/非数/缺字段 → 400,目标保持默认', async () =>
       assert.equal(r.status, 400, `goal_ml=${g} 应 400,实得 ${r.status}`);
     }
     // 关键:被拒的请求**不能**留下痕迹
-    assert.equal(app.store.goal(CUP), DEFAULT_GOAL_ML, '拒绝后目标应仍是默认值');
+    assert.equal(await app.store.goal(CUP), DEFAULT_GOAL_ML, '拒绝后目标应仍是默认值');
   } finally {
     await app.close();
   }
@@ -54,7 +54,7 @@ test('PUT /goal:坏 JSON 体 → 400(不抛、不 500)', async () => {
   try {
     const r = await putGoal(base, '{ not valid json');
     assert.equal(r.status, 400);
-    assert.equal(app.store.goal(CUP), DEFAULT_GOAL_ML);
+    assert.equal(await app.store.goal(CUP), DEFAULT_GOAL_ML);
   } finally {
     await app.close();
   }
@@ -64,9 +64,9 @@ test('PUT /goal:边界值 1 与 10000 被接受', async () => {
   const { app, base } = await startApp();
   try {
     assert.equal((await putGoal(base, JSON.stringify({ goal_ml: 1 }))).status, 200);
-    assert.equal(app.store.goal(CUP), 1);
+    assert.equal(await app.store.goal(CUP), 1);
     assert.equal((await putGoal(base, JSON.stringify({ goal_ml: 10000 }))).status, 200);
-    assert.equal(app.store.goal(CUP), 10_000);
+    assert.equal(await app.store.goal(CUP), 10_000);
   } finally {
     await app.close();
   }
@@ -77,7 +77,7 @@ test('PUT /goal:用 GET 改目标 → 405', async () => {
   try {
     const r = await fetch(`${base}/cups/${CUP}/goal`);
     assert.equal(r.status, 405);
-    assert.equal(app.store.goal(CUP), DEFAULT_GOAL_ML);
+    assert.equal(await app.store.goal(CUP), DEFAULT_GOAL_ML);
   } finally {
     await app.close();
   }

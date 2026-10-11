@@ -76,8 +76,8 @@ export async function runChat(deps: ChatDeps, req: ChatRequest): Promise<ChatAns
   const now = deps.now ?? (() => Date.now());
   const ctx: ToolCtx = { store: deps.store, commands: deps.commands, now };
 
-  const history = deps.memory.recentTurns(req.cupId, RECALL_TURNS);
-  const profile = boundedProfile(deps.memory.profile(req.cupId));
+  const history = await deps.memory.recentTurns(req.cupId, RECALL_TURNS);
+  const profile = boundedProfile(await deps.memory.profile(req.cupId));
 
   // 数字守卫的 allow 集合:用户问题、历史、长期画像里的数字先天可信(工具结果边跑边并入)
   const allowed = new Set<string>();
@@ -98,7 +98,7 @@ export async function runChat(deps: ChatDeps, req: ChatRequest): Promise<ChatAns
       modelTurn = await deps.chat.turn({ system: systemPrompt(req, profile), turns, tools: availableTools(wrote) });
     } catch (err) {
       deps.log(`chat: 模型调用失败 → 回退(${(err as Error).message})`, 'warn');
-      return fallback(deps, ctx, req, toolsUsed, i);
+      return await fallback(deps, ctx, req, toolsUsed, i);
     }
 
     const calls = modelTurn.toolCalls ?? [];
@@ -106,17 +106,17 @@ export async function runChat(deps: ChatDeps, req: ChatRequest): Promise<ChatAns
       const text = (modelTurn.text ?? '').trim();
       const check = grounded(text, allowed);
       if (check.ok) {
-        record(deps, req, text, 'llm', toolsUsed);
+        await record(deps, req, text, 'llm', toolsUsed);
         return { text, source: 'llm', tools_used: toolsUsed, turns: i + 1 };
       }
       deps.log(`chat: 守卫拦下 → 回退(${check.reason})`, 'warn');
-      return fallback(deps, ctx, req, toolsUsed, i);
+      return await fallback(deps, ctx, req, toolsUsed, i);
     }
 
     turns.push({ role: 'assistant', text: modelTurn.text ?? '', toolCalls: calls });
 
     for (const call of calls) {
-      const result = dispatch(ctx, req.cupId, call.name, call.input, wrote);
+      const result = await dispatch(ctx, req.cupId, call.name, call.input, wrote);
       if (result.ok && getTool(call.name)?.isWrite) wrote = true;
       if (!toolsUsed.includes(call.name)) toolsUsed.push(call.name);
 
@@ -127,7 +127,7 @@ export async function runChat(deps: ChatDeps, req: ChatRequest): Promise<ChatAns
   }
 
   deps.log(`chat: 达到 ${MAX_TURNS} 轮上限 → 回退`, 'warn');
-  return fallback(deps, ctx, req, toolsUsed, MAX_TURNS);
+  return await fallback(deps, ctx, req, toolsUsed, MAX_TURNS);
 }
 
 /** 可用工具:写过之后摘掉写工具(写预算的"摘"这一半) */
@@ -141,32 +141,32 @@ function availableTools(wrote: boolean): ToolSpec[] {
  * 分发一次工具调用 —— **不可信参数的唯一收口**。
  * 未知工具名 → {ok:false}(不抛、不调);参数校验失败 → {ok:false};写预算耗尽 → {ok:false}。
  */
-export function dispatch(
+export async function dispatch(
   ctx: ToolCtx,
   cupId: string,
   name: string,
   input: unknown,
   wrote: boolean,
-): ToolResult {
+): Promise<ToolResult> {
   const tool = getTool(name);
   if (!tool) return { ok: false, output: null, error: `未知工具 ${name}` };
   if (tool.isWrite && wrote) return { ok: false, output: null, error: '每次对话只允许一次写入' };
   const parsed = tool.parse(input);
   if (parsed === null) return { ok: false, output: null, error: '参数不合法' };
-  return tool.run(ctx, cupId, parsed);
+  return await tool.run(ctx, cupId, parsed);
 }
 
 /** 用真实数据拼一句确定性答复(守卫拦下 / 超时 / 出错 / 轮次用尽 的兜底) */
-function fallback(
+async function fallback(
   deps: ChatDeps,
   ctx: ToolCtx,
   req: ChatRequest,
   toolsUsed: string[],
   turns: number,
-): ChatAnswer {
-  const out = getTool('get_today')!.run(ctx, req.cupId, {}).output;
+): Promise<ChatAnswer> {
+  const out = (await getTool('get_today')!.run(ctx, req.cupId, {})).output;
   const text = buildFallback(out);
-  record(deps, req, text, 'fallback', toolsUsed);
+  await record(deps, req, text, 'fallback', toolsUsed);
   return { text, source: 'fallback', tools_used: toolsUsed, turns };
 }
 
@@ -185,18 +185,18 @@ function buildFallback(out: unknown): string {
 }
 
 /** 记入记忆(非主动时补一条 user 轮,再记助手轮) */
-function record(
+async function record(
   deps: ChatDeps,
   req: ChatRequest,
   answer: string,
   source: 'llm' | 'fallback',
   toolsUsed: string[],
-): void {
+): Promise<void> {
   const now = (deps.now ?? (() => Date.now()))();
   if (!req.proactive) {
-    deps.memory.appendTurn({ cup_id: req.cupId, ts: now, role: 'user', text: req.question });
+    await deps.memory.appendTurn({ cup_id: req.cupId, ts: now, role: 'user', text: req.question });
   }
-  deps.memory.appendTurn({
+  await deps.memory.appendTurn({
     cup_id: req.cupId,
     ts: now,
     role: req.proactive ? 'proactive' : 'assistant',

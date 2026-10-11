@@ -110,7 +110,15 @@ export function startSimAdapter(opts: SimAdapterOptions): SimAdapterHandle {
       return;
     }
 
-    if (opts.pipeline.ingest(parsed.data)) accepted += 1;
+    // ingest 现在 async:不 await(适配器不该为等一次落盘阻塞入站),尾挂 catch 防未捕获拒绝。
+    void opts.pipeline
+      .ingest(parsed.data)
+      .then((ok) => {
+        if (ok) accepted += 1;
+      })
+      .catch((err: unknown) => {
+        log(`[sim-adapter] 入站异常:${err instanceof Error ? err.message : String(err)}`, 'error');
+      });
   };
 
   connect();

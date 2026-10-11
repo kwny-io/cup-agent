@@ -138,55 +138,55 @@ test('融合:摇晃时杯盖置信度进一步降低', () => {
 
 // ── 日聚合 ───────────────────────────────────────────────────────
 
-test('日聚合:drink 累加 drank_ml,refill 进 refill_ml', () => {
+test('日聚合:drink 累加 drank_ml,refill 进 refill_ml', async () => {
   const store = new MemoryStore();
   const p = new Pipeline(store);
   const now = Date.now();
-  p.ingest({ kind: 'event', payload: drink(120, now) });
-  p.ingest({ kind: 'event', payload: drink(100, now + 1000) });
-  p.ingest({
+  await p.ingest({ kind: 'event', payload: drink(120, now) });
+  await p.ingest({ kind: 'event', payload: drink(100, now + 1000) });
+  await p.ingest({
     kind: 'event',
     payload: { ...drink(300, now + 2000), type: 'refill' },
   });
 
-  const agg = store.agg(CUP_ID, dayKey(now));
+  const agg = await store.agg(CUP_ID, dayKey(now));
   assert.ok(agg);
   assert.equal(agg.drank_ml, 220, '两次喝水 120+100');
   assert.equal(agg.drink_count, 2);
   assert.equal(agg.refill_ml, 300);
 });
 
-test('日聚合:同一事件重投不重复计数(事件级去重)', () => {
+test('日聚合:同一事件重投不重复计数(事件级去重)', async () => {
   const store = new MemoryStore();
   const p = new Pipeline(store);
   const e = drink(150);
-  p.ingest({ kind: 'event', payload: e });
-  p.ingest({ kind: 'event', payload: e }); // 重投
-  const agg = store.agg(CUP_ID, dayKey(e.ts));
+  await p.ingest({ kind: 'event', payload: e });
+  await p.ingest({ kind: 'event', payload: e }); // 重投
+  const agg = await store.agg(CUP_ID, dayKey(e.ts));
   assert.equal(agg?.drank_ml, 150, '重投不应翻倍');
   assert.equal(agg?.drink_count, 1);
 });
 
-test('日聚合:水温区间来自融合样本的 temp', () => {
+test('日聚合:水温区间来自融合样本的 temp', async () => {
   const store = new MemoryStore();
   const p = new Pipeline(store);
   const now = Date.now();
-  p.ingest({ kind: 'lid', payload: lid({ ts: now, temp_c: 60 }) });
-  p.ingest({ kind: 'base', payload: base({ ts: now, present: true, stable: true }) });
-  p.ingest({ kind: 'lid', payload: lid({ ts: now + 10, seq: 1, temp_c: 40 }) });
-  const agg = store.agg(CUP_ID, dayKey(now));
+  await p.ingest({ kind: 'lid', payload: lid({ ts: now, temp_c: 60 }) });
+  await p.ingest({ kind: 'base', payload: base({ ts: now, present: true, stable: true }) });
+  await p.ingest({ kind: 'lid', payload: lid({ ts: now + 10, seq: 1, temp_c: 40 }) });
+  const agg = await store.agg(CUP_ID, dayKey(now));
   assert.equal(agg?.temp_min_c, 40);
   assert.equal(agg?.temp_max_c, 60);
 });
 
 // ── 管线接线 ─────────────────────────────────────────────────────
 
-test('管线:遥测进去,融合样本从 sample 回调出来', () => {
+test('管线:遥测进去,融合样本从 sample 回调出来', async () => {
   const store = new MemoryStore();
   const samples: number[] = [];
   const p = new Pipeline(store, { sample: (s) => samples.push(s.volume_ml) });
-  p.ingest({ kind: 'base', payload: base({ weight_g: 485 }) });
+  await p.ingest({ kind: 'base', payload: base({ weight_g: 485 }) });
   assert.equal(samples.length, 1);
   assert.equal(samples[0], 200);
-  assert.equal(store.latestSample(CUP_ID)?.volume_ml, 200, 'Store 也记住最新样本');
+  assert.equal((await store.latestSample(CUP_ID))?.volume_ml, 200, 'Store 也记住最新样本');
 });

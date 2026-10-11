@@ -153,8 +153,8 @@ test('真 broker:上行 base 遥测 → 适配器 → 管线 → Store(485g→20
 
     assert.ok(app.mqtt, '应挂上 mqtt 适配器');
     assert.equal(app.mqtt!.accepted(), 1, `应有 1 帧被接受,实得 ${app.mqtt!.accepted()}`);
-    assert.equal(app.store.latestSample(CUP_ID)?.volume_ml, 200, '485g → 200ml');
-    assert.equal(app.store.latestSample(CUP_ID)?.derived_by, 'base');
+    assert.equal((await app.store.latestSample(CUP_ID))?.volume_ml, 200, '485g → 200ml');
+    assert.equal((await app.store.latestSample(CUP_ID))?.derived_by, 'base');
   } finally {
     await app.close();
     await rig.dispose();
@@ -248,7 +248,7 @@ test('真 broker:坏契约报文 → 拒收,好报文照常进库、下游不受
     assert.equal(app.mqtt!.accepted(), 1, `应接受 1 条,实得 ${app.mqtt!.accepted()}`);
     assert.equal(app.pipeline.stats().rejected, 2);
     assert.ok(logs.some((l) => l.includes('拒收')), '应有拒收日志');
-    assert.equal(app.store.latestSample(CUP_ID)?.volume_ml, 200, '好报文仍进库');
+    assert.equal((await app.store.latestSample(CUP_ID))?.volume_ml, 200, '好报文仍进库');
   } finally {
     await app.close();
     await rig.dispose();
@@ -263,7 +263,7 @@ test('真 broker:topic 设备与报文 device_id 不符 → 拒收(防固件发�
     rig.device.publish(`dev/base-AAAAAA/up`, JSON.stringify(baseFrame('base-BBBBBB')), { qos: 1 });
     await delay(200);
     assert.equal(app.mqtt!.rejected(), 1);
-    assert.equal(app.store.latestSample(CUP_ID), null, '不符的帧不进库');
+    assert.equal(await app.store.latestSample(CUP_ID), null, '不符的帧不进库');
   } finally {
     await app.close();
     await rig.dispose();

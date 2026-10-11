@@ -63,18 +63,18 @@ export function normalizeEnvelope(raw: unknown): unknown[] {
 }
 
 /**
- * 核心:收下一个信封,逐帧校验并灌入管线。**纯函数** —— 无网络、无时钟、无全局态。
+ * 核心:收下一个信封,逐帧校验并灌入管线。**无副作用的地道纯逻辑**(无网络、无时钟、无全局态)。
  *
  * @param raw  已 JSON.parse 的请求体(不可信输入)
  * @param pipe 下游管线(与 WS/MQTT 适配器同一个)
  * @param expectedCupId 若给出,帧的 cup_id 必须匹配(路由级隔离:`/cups/A/ingest`
  *        不许塞 cup B 的数据)。不匹配计入 rejected。给 undefined 则不检查。
  */
-export function ingestEnvelope(
+export async function ingestEnvelope(
   raw: unknown,
   pipe: Pipeline,
   expectedCupId?: string,
-): IngestResult {
+): Promise<IngestResult> {
   const frames = normalizeEnvelope(raw);
   const res: IngestResult = { accepted: 0, deduped: 0, rejected: 0, errors: [] };
 
@@ -84,7 +84,10 @@ export function ingestEnvelope(
     return res;
   }
 
-  frames.forEach((item, i) => {
+  // 逐帧**串行** await —— ingest 内含"写事件 + 写聚合"的写后读不变量,
+  // 并行会破坏顺序(与 pipeline.ts 同一铁律)。
+  for (let i = 0; i < frames.length; i++) {
+    const item = frames[i];
     const parsed = UpstreamFrameSchema.safeParse(item);
     if (!parsed.success) {
       res.rejected += 1;
@@ -95,7 +98,7 @@ export function ingestEnvelope(
           .join('; ');
         res.errors.push(`[${i}] ${why}`);
       }
-      return;
+      continue;
     }
     const frame = parsed.data;
     if (expectedCupId !== undefined && frame.payload.cup_id !== expectedCupId) {
@@ -104,11 +107,11 @@ export function ingestEnvelope(
       if (res.errors.length < MAX_ERRORS_REPORTED) {
         res.errors.push(`[${i}] cup_id 不符:帧为 ${frame.payload.cup_id},路由为 ${expectedCupId}`);
       }
-      return;
+      continue;
     }
-    if (pipe.ingest(frame)) res.accepted += 1;
+    if (await pipe.ingest(frame)) res.accepted += 1;
     else res.deduped += 1; // 合规但重复
-  });
+  }
 
   return res;
 }

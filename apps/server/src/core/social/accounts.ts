@@ -48,30 +48,30 @@ export class MemoryAccountsStore implements AccountsStore {
   private subs = new Map<string, Set<string>>(); // userId → packIds
   private friendEdges = new Map<string, Friendship>(); // pairKey → friendship
 
-  createAccount(a: Account): void {
+  async createAccount(a: Account): Promise<void> {
     this.accounts.set(a.user_id, a);
     this.byEmail.set(normalizeEmail(a.email), a.user_id);
   }
 
-  accountByEmail(email: string): Account | null {
+  async accountByEmail(email: string): Promise<Account | null> {
     const id = this.byEmail.get(normalizeEmail(email));
     return id ? (this.accounts.get(id) ?? null) : null;
   }
 
-  accountById(id: string): Account | null {
+  async accountById(id: string): Promise<Account | null> {
     return this.accounts.get(id) ?? null;
   }
 
-  listAccounts(): Account[] {
+  async listAccounts(): Promise<Account[]> {
     return [...this.accounts.values()].sort((x, y) => x.created_at - y.created_at);
   }
 
-  setDisabled(id: string, v: boolean): void {
+  async setDisabled(id: string, v: boolean): Promise<void> {
     const a = this.accounts.get(id);
     if (a) this.accounts.set(id, { ...a, disabled: v });
   }
 
-  setCup(id: string, cupId: string | null): void {
+  async setCup(id: string, cupId: string | null): Promise<void> {
     const a = this.accounts.get(id);
     if (!a) return;
     if (cupId === null) {
@@ -82,53 +82,53 @@ export class MemoryAccountsStore implements AccountsStore {
     }
   }
 
-  putSession(s: Session): void {
+  async putSession(s: Session): Promise<void> {
     this.sessions.set(s.token, s);
   }
 
-  session(token: string): Session | null {
+  async session(token: string): Promise<Session | null> {
     return this.sessions.get(token) ?? null;
   }
 
-  dropSession(token: string): void {
+  async dropSession(token: string): Promise<void> {
     this.sessions.delete(token);
   }
 
-  createPack(p: PersonaPack): void {
+  async createPack(p: PersonaPack): Promise<void> {
     this.packs.set(p.pack_id, p);
   }
 
-  packById(id: string): PersonaPack | null {
+  async packById(id: string): Promise<PersonaPack | null> {
     return this.packs.get(id) ?? null;
   }
 
-  listPacks(status?: PackStatus): PersonaPack[] {
+  async listPacks(status?: PackStatus): Promise<PersonaPack[]> {
     const all = [...this.packs.values()].sort((x, y) => y.created_at - x.created_at);
     return status ? all.filter((p) => p.status === status) : all;
   }
 
-  setPackStatus(id: string, status: PackStatus): void {
+  async setPackStatus(id: string, status: PackStatus): Promise<void> {
     const p = this.packs.get(id);
     if (p) this.packs.set(id, { ...p, status });
   }
 
-  subscribe(userId: string, packId: string): void {
+  async subscribe(userId: string, packId: string): Promise<void> {
     const set = this.subs.get(userId) ?? new Set<string>();
     set.add(packId);
     this.subs.set(userId, set);
   }
 
-  subscriptions(userId: string): string[] {
+  async subscriptions(userId: string): Promise<string[]> {
     return [...(this.subs.get(userId) ?? new Set<string>())];
   }
 
-  addFriend(a: string, b: string): void {
+  async addFriend(a: string, b: string): Promise<void> {
     if (a === b) return;
     const [x, y] = friendPair(a, b);
     this.friendEdges.set(friendKey(a, b), { a_user_id: x, b_user_id: y, created_at: Date.now() });
   }
 
-  friends(userId: string): string[] {
+  async friends(userId: string): Promise<string[]> {
     const out: string[] = [];
     for (const f of this.friendEdges.values()) {
       if (f.a_user_id === userId) out.push(f.b_user_id);
@@ -162,12 +162,12 @@ export class FileAccountsStore implements AccountsStore {
     return this.file.data;
   }
 
-  createAccount(a: Account): void {
+  async createAccount(a: Account): Promise<void> {
     this.s.accounts[a.user_id] = a;
     this.file.flushSoon();
   }
 
-  accountByEmail(email: string): Account | null {
+  async accountByEmail(email: string): Promise<Account | null> {
     const target = normalizeEmail(email);
     for (const a of Object.values(this.s.accounts)) {
       if (normalizeEmail(a.email) === target) return a;
@@ -175,15 +175,15 @@ export class FileAccountsStore implements AccountsStore {
     return null;
   }
 
-  accountById(id: string): Account | null {
+  async accountById(id: string): Promise<Account | null> {
     return this.s.accounts[id] ?? null;
   }
 
-  listAccounts(): Account[] {
+  async listAccounts(): Promise<Account[]> {
     return Object.values(this.s.accounts).sort((x, y) => x.created_at - y.created_at);
   }
 
-  setDisabled(id: string, v: boolean): void {
+  async setDisabled(id: string, v: boolean): Promise<void> {
     const a = this.s.accounts[id];
     if (a) {
       this.s.accounts[id] = { ...a, disabled: v };
@@ -191,7 +191,7 @@ export class FileAccountsStore implements AccountsStore {
     }
   }
 
-  setCup(id: string, cupId: string | null): void {
+  async setCup(id: string, cupId: string | null): Promise<void> {
     const a = this.s.accounts[id];
     if (!a) return;
     if (cupId === null) {
@@ -203,37 +203,37 @@ export class FileAccountsStore implements AccountsStore {
     this.file.flushSoon();
   }
 
-  putSession(s: Session): void {
+  async putSession(s: Session): Promise<void> {
     this.s.sessions[s.token] = s;
     this.file.flushSoon();
   }
 
-  session(token: string): Session | null {
+  async session(token: string): Promise<Session | null> {
     return this.s.sessions[token] ?? null;
   }
 
-  dropSession(token: string): void {
+  async dropSession(token: string): Promise<void> {
     if (this.s.sessions[token]) {
       delete this.s.sessions[token];
       this.file.flushSoon();
     }
   }
 
-  createPack(p: PersonaPack): void {
+  async createPack(p: PersonaPack): Promise<void> {
     this.s.packs[p.pack_id] = p;
     this.file.flushSoon();
   }
 
-  packById(id: string): PersonaPack | null {
+  async packById(id: string): Promise<PersonaPack | null> {
     return this.s.packs[id] ?? null;
   }
 
-  listPacks(status?: PackStatus): PersonaPack[] {
+  async listPacks(status?: PackStatus): Promise<PersonaPack[]> {
     const all = Object.values(this.s.packs).sort((x, y) => y.created_at - x.created_at);
     return status ? all.filter((p) => p.status === status) : all;
   }
 
-  setPackStatus(id: string, status: PackStatus): void {
+  async setPackStatus(id: string, status: PackStatus): Promise<void> {
     const p = this.s.packs[id];
     if (p) {
       this.s.packs[id] = { ...p, status };
@@ -241,7 +241,7 @@ export class FileAccountsStore implements AccountsStore {
     }
   }
 
-  subscribe(userId: string, packId: string): void {
+  async subscribe(userId: string, packId: string): Promise<void> {
     const cur = this.s.subscriptions[userId] ?? [];
     if (!cur.includes(packId)) {
       this.s.subscriptions[userId] = cur.concat(packId);
@@ -249,11 +249,11 @@ export class FileAccountsStore implements AccountsStore {
     }
   }
 
-  subscriptions(userId: string): string[] {
+  async subscriptions(userId: string): Promise<string[]> {
     return [...(this.s.subscriptions[userId] ?? [])];
   }
 
-  addFriend(a: string, b: string): void {
+  async addFriend(a: string, b: string): Promise<void> {
     if (a === b) return;
     const key = friendKey(a, b);
     if (this.s.friends.some((f) => friendKey(f.a_user_id, f.b_user_id) === key)) return;
@@ -262,7 +262,7 @@ export class FileAccountsStore implements AccountsStore {
     this.file.flushSoon();
   }
 
-  friends(userId: string): string[] {
+  async friends(userId: string): Promise<string[]> {
     const out: string[] = [];
     for (const f of this.s.friends) {
       if (f.a_user_id === userId) out.push(f.b_user_id);

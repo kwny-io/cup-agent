@@ -200,13 +200,13 @@ test('身体:没有 cue 时不抢占欠水提醒(15:00 欠水照常开口)', asy
 
 // ── get_self:把身体数字带进数字守卫 ─────────────────────────────
 
-test('get_self:产出电量/水温/姿态等真实身体事实', () => {
+test('get_self:产出电量/水温/姿态等真实身体事实', async () => {
   const store = new MemoryStore();
   store.appendTelemetry(lidAt(T_2000, 12, 72));
   store.setLatestSample({ ...fusedAt(T_2000), temp_c: null }); // 融合样本无水温 → 退到杯盖遥测
   const ctx: ToolCtx = { store, commands: new CommandQueue(), now: () => T_2000 };
 
-  const out = getTool('get_self')!.run(ctx, CUP, {}).output as {
+  const out = (await getTool('get_self')!.run(ctx, CUP, {})).output as {
     battery_pct: number;
     temp_c: number;
     low_battery: boolean;

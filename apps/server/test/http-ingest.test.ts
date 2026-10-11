@@ -62,75 +62,75 @@ test('normalizeEnvelope:收 frame / frames / 裸数组 / 裸对象,其余归空'
 
 // ── 2. 纯函数 ingestEnvelope ─────────────────────────────────────
 
-test('ingestEnvelope:合规帧入管线并被接受', () => {
+test('ingestEnvelope:合规帧入管线并被接受', async () => {
   const { pipe, store } = freshPipe();
-  const r = ingestEnvelope({ frames: [lidFrame()] }, pipe);
+  const r = await ingestEnvelope({ frames: [lidFrame()] }, pipe);
   assert.deepEqual(
     { a: r.accepted, d: r.deduped, x: r.rejected },
     { a: 1, d: 0, x: 0 },
   );
-  assert.ok(store.latestSample(CUP), '帧应真落进 Store');
+  assert.ok(await store.latestSample(CUP), '帧应真落进 Store');
 });
 
-test('ingestEnvelope:脏帧被契约挡下,不进 Store', () => {
+test('ingestEnvelope:脏帧被契约挡下,不进 Store', async () => {
   const { pipe, store } = freshPipe();
   // temp_c 超上界(契约 max 120)+ 缺 kind
   const bad = { kind: 'lid', payload: { ...(lidFrame().payload as object), temp_c: 999 } };
-  const r = ingestEnvelope({ frames: [bad] }, pipe);
+  const r = await ingestEnvelope({ frames: [bad] }, pipe);
   assert.equal(r.rejected, 1);
   assert.equal(r.accepted, 0);
-  assert.equal(store.latestSample(CUP), null, '脏帧绝不能进 Store');
+  assert.equal(await store.latestSample(CUP), null, '脏帧绝不能进 Store');
   assert.equal(r.errors.length, 1);
   assert.match(r.errors[0]!, /\[0\]/);
 });
 
-test('ingestEnvelope:混批 —— 合规的收、脏的丢,计数分开', () => {
+test('ingestEnvelope:混批 —— 合规的收、脏的丢,计数分开', async () => {
   const { pipe } = freshPipe();
-  const r = ingestEnvelope({ frames: [lidFrame(), { garbage: true }, lidFrame(CUP, { seq: 1 })] }, pipe);
+  const r = await ingestEnvelope({ frames: [lidFrame(), { garbage: true }, lidFrame(CUP, { seq: 1 })] }, pipe);
   assert.equal(r.accepted, 2);
   assert.equal(r.rejected, 1);
   assert.equal(r.errors.length, 1, '只报脏的那条');
 });
 
-test('ingestEnvelope:cup_id 路由隔离 —— 别的杯子的帧被拒', () => {
+test('ingestEnvelope:cup_id 路由隔离 —— 别的杯子的帧被拒', async () => {
   const { pipe, store } = freshPipe();
-  const r = ingestEnvelope({ frames: [lidFrame('cup-OTHER')] }, pipe, CUP);
+  const r = await ingestEnvelope({ frames: [lidFrame('cup-OTHER')] }, pipe, CUP);
   assert.equal(r.rejected, 1);
   assert.equal(r.accepted, 0);
-  assert.equal(store.latestSample('cup-OTHER'), null, '不该越界写入别的杯子');
+  assert.equal(await store.latestSample('cup-OTHER'), null, '不该越界写入别的杯子');
   assert.match(r.errors[0]!, /cup_id 不符/);
 });
 
-test('ingestEnvelope:不给 expectedCupId 时不校验 cup_id', () => {
+test('ingestEnvelope:不给 expectedCupId 时不校验 cup_id', async () => {
   const { pipe } = freshPipe();
-  const r = ingestEnvelope({ frames: [lidFrame('cup-ANY')] }, pipe);
+  const r = await ingestEnvelope({ frames: [lidFrame('cup-ANY')] }, pipe);
   assert.equal(r.accepted, 1);
 });
 
-test('ingestEnvelope:重复 seq 计入 deduped,不计 accepted', () => {
+test('ingestEnvelope:重复 seq 计入 deduped,不计 accepted', async () => {
   const { pipe } = freshPipe();
   // 同一帧发两遍(seq 相同 → Deduper 丢第二遍)
   const f = lidFrame();
-  const r = ingestEnvelope({ frames: [f, f] }, pipe);
+  const r = await ingestEnvelope({ frames: [f, f] }, pipe);
   assert.equal(r.accepted, 1);
   assert.equal(r.deduped, 1);
   assert.equal(r.rejected, 0);
 });
 
-test('ingestEnvelope:超批上限 → 整批拒绝,不进管线', () => {
+test('ingestEnvelope:超批上限 → 整批拒绝,不进管线', async () => {
   const { pipe, store } = freshPipe();
   const big = Array.from({ length: MAX_INGEST_BATCH + 1 }, () => lidFrame());
-  const r = ingestEnvelope({ frames: big }, pipe);
+  const r = await ingestEnvelope({ frames: big }, pipe);
   assert.equal(r.accepted, 0);
   assert.equal(r.rejected, big.length);
-  assert.equal(store.latestSample(CUP), null);
+  assert.equal(await store.latestSample(CUP), null);
   assert.match(r.errors[0]!, /批过大/);
 });
 
-test('ingestEnvelope:空批 / 空对象 → 零计数,不报错', () => {
+test('ingestEnvelope:空批 / 空对象 → 零计数,不报错', async () => {
   const { pipe } = freshPipe();
   for (const body of [{}, [], { frames: [] }, null, 7]) {
-    const r = ingestEnvelope(body, pipe);
+    const r = await ingestEnvelope(body, pipe);
     assert.deepEqual(
       { a: r.accepted, d: r.deduped, x: r.rejected },
       { a: 0, d: 0, x: 0 },
@@ -160,7 +160,7 @@ test('HTTP:POST /ingest 缺 key → 401(写端点默认强制)', async () => {
   try {
     const r = await postIngest(base, { frames: [lidFrame()] });
     assert.equal(r.status, 401);
-    assert.equal(app.store.latestSample(CUP), null, '401 后不该落任何数据');
+    assert.equal(await app.store.latestSample(CUP), null, '401 后不该落任何数据');
   } finally {
     await app.close();
   }

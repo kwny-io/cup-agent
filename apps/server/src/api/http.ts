@@ -27,6 +27,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Command } from '@cup/contract';
 import { CUP } from '@cup/contract';
 import type { Store } from '../store/store.ts';
+import type { DailyAgg } from '../core/types.ts';
 import { DEFAULT_GOAL_ML, dayKey, dayStart } from '../store/store.ts';
 import type { Pipeline } from '../core/pipeline.ts';
 import type { LiveHub } from './live.ts';
@@ -113,15 +114,15 @@ export function createApiServer(deps: ApiDeps): Server {
       res.writeHead(204).end();
       return;
     }
-    try {
-      route(req, res, resolved);
-    } catch (err) {
-      send(res, 500, { error: (err as Error).message });
-    }
+    // route 现在 async(Store 全 Promise 化):同步抛与异步拒绝一并在此收口。
+    // headersSent 守卫:处理器可能已 send 后才抛(极罕见),避免二次写头。
+    void route(req, res, resolved).catch((err: unknown) => {
+      if (!res.headersSent) send(res, 500, { error: (err as Error).message });
+    });
   });
 }
 
-function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): void {
+async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const path = url.pathname;
 
@@ -137,43 +138,43 @@ function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): void {
   // ── 账号 / 会话路由(与杯子无关;不经 x-api-key,自带口令校验)──
   const auth = path.match(/^\/auth\/(register|login|logout|me)$/);
   if (auth) {
-    return authRoute(req, res, deps, auth[1]!);
+    return await authRoute(req, res, deps, auth[1]!);
   }
 
   // ── 人格市场(UGC;需登录会话,不走 x-api-key)──
   if (path === '/market/packs') {
-    return marketPacksRoute(req, res, deps, url);
+    return await marketPacksRoute(req, res, deps, url);
   }
   const sub = path.match(/^\/market\/packs\/([^/]+)\/subscribe$/);
   if (sub) {
-    return marketSubscribeRoute(req, res, deps, decodeURIComponent(sub[1]!));
+    return await marketSubscribeRoute(req, res, deps, decodeURIComponent(sub[1]!));
   }
 
   // ── 管理后台(会话 + role==='admin')──
   if (path === '/admin/users') {
-    return adminUsersRoute(req, res, deps);
+    return await adminUsersRoute(req, res, deps);
   }
   const banUser = path.match(/^\/admin\/users\/([^/]+)\/disable$/);
   if (banUser) {
-    return adminUserDisableRoute(req, res, deps, decodeURIComponent(banUser[1]!));
+    return await adminUserDisableRoute(req, res, deps, decodeURIComponent(banUser[1]!));
   }
   if (path === '/admin/packs') {
-    return adminPacksRoute(req, res, deps, url);
+    return await adminPacksRoute(req, res, deps, url);
   }
   const verdict = path.match(/^\/admin\/packs\/([^/]+)\/(approve|reject)$/);
   if (verdict) {
-    return adminPackVerdictRoute(req, res, deps, decodeURIComponent(verdict[1]!), verdict[2]!);
+    return await adminPackVerdictRoute(req, res, deps, decodeURIComponent(verdict[1]!), verdict[2]!);
   }
 
   // ── 杯子社交(#74;需登录会话)──
   if (path === '/social/friends') {
-    return socialFriendsRoute(req, res, deps);
+    return await socialFriendsRoute(req, res, deps);
   }
   if (path === '/social/cup') {
-    return socialCupBindRoute(req, res, deps);
+    return await socialCupBindRoute(req, res, deps);
   }
   if (path === '/social/team') {
-    return socialTeamRoute(req, res, deps);
+    return await socialTeamRoute(req, res, deps);
   }
 
   const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|profile)$/);
@@ -190,29 +191,29 @@ function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): void {
 
   switch (action) {
     case 'today':
-      return today(res, deps, cupId);
+      return await today(res, deps, cupId);
     case 'series':
-      return series(res, deps, cupId, url);
+      return await series(res, deps, cupId, url);
     case 'events':
-      return events(res, deps, cupId, url);
+      return await events(res, deps, cupId, url);
     case 'state':
-      return state(res, deps, cupId);
+      return await state(res, deps, cupId);
     case 'goal':
-      return setGoal(req, res, deps, cupId);
+      return await setGoal(req, res, deps, cupId);
     case 'config':
-      return setConfig(req, res, deps, cupId);
+      return await setConfig(req, res, deps, cupId);
     case 'ask':
-      return askRoute(req, res, deps, cupId);
+      return await askRoute(req, res, deps, cupId);
     case 'ingest':
-      return ingestRoute(req, res, deps, cupId);
+      return await ingestRoute(req, res, deps, cupId);
     case 'report/latest':
-      return void reportRoute(res, deps, cupId);
+      return await reportRoute(res, deps, cupId);
     case 'report/history':
-      return historyRoute(res, deps, cupId, url);
+      return await historyRoute(res, deps, cupId, url);
     case 'personality/history':
-      return personalityHistoryRoute(res, deps, cupId, url);
+      return await personalityHistoryRoute(res, deps, cupId, url);
     case 'profile':
-      return profileRoute(req, res, deps, cupId);
+      return await profileRoute(req, res, deps, cupId);
   }
 }
 
@@ -222,51 +223,52 @@ function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): void {
 // `Authorization: Bearer <token>`。token 的解析统一走 resolveSession(deps, token)。
 // 见 auth.ts 的规则层与 types.ts 的出口视图(绝不含 salt/hash)。
 
-function authRoute(
+async function authRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ApiDeps,
   action: string,
-): void {
+): Promise<void> {
   const authDeps = { store: deps.accounts!, adminEmail: deps.adminEmail };
   const method = req.method ?? 'GET';
 
   if (action === 'register') {
     if (method !== 'POST') return send(res, 405, { error: 'use POST' });
-    return void readJson(req).then((body) => {
-      const b = (body ?? {}) as Record<string, unknown>;
-      const r = register(authDeps, {
-        email: typeof b.email === 'string' ? b.email : '',
-        password: typeof b.password === 'string' ? b.password : '',
-        nickname: typeof b.nickname === 'string' ? b.nickname : undefined,
-      });
-      if (!r.ok) return send(res, r.status, { error: r.error });
-      send(res, 200, { token: r.token, user: r.user });
+    const body = await readJson(req);
+    const b = (body ?? {}) as Record<string, unknown>;
+    const r = await register(authDeps, {
+      email: typeof b.email === 'string' ? b.email : '',
+      password: typeof b.password === 'string' ? b.password : '',
+      nickname: typeof b.nickname === 'string' ? b.nickname : undefined,
     });
+    if (!r.ok) return send(res, r.status, { error: r.error });
+    return send(res, 200, { token: r.token, user: r.user });
   }
 
   if (action === 'login') {
     if (method !== 'POST') return send(res, 405, { error: 'use POST' });
-    return void readJson(req).then((body) => {
-      const b = (body ?? {}) as Record<string, unknown>;
-      const r = login(authDeps, {
-        email: typeof b.email === 'string' ? b.email : '',
-        password: typeof b.password === 'string' ? b.password : '',
-      });
-      if (!r.ok) return send(res, r.status, { error: r.error });
-      send(res, 200, { token: r.token, user: r.user });
+    const body = await readJson(req);
+    const b = (body ?? {}) as Record<string, unknown>;
+    const r = await login(authDeps, {
+      email: typeof b.email === 'string' ? b.email : '',
+      password: typeof b.password === 'string' ? b.password : '',
     });
+    if (!r.ok) return send(res, r.status, { error: r.error });
+    return send(res, 200, { token: r.token, user: r.user });
   }
 
   if (action === 'logout') {
     if (method !== 'POST') return send(res, 405, { error: 'use POST' });
-    logout(authDeps, bearerToken(req.headers['authorization']));
+    await logout(authDeps, bearerToken(req.headers['authorization']));
     res.writeHead(204).end();
     return;
   }
 
   // me:带令牌 → 当前用户;否则 401
-  const user: PublicUser | null = resolveSession(authDeps, bearerToken(req.headers['authorization']));
+  const user: PublicUser | null = await resolveSession(
+    authDeps,
+    bearerToken(req.headers['authorization']),
+  );
   if (!user) return send(res, 401, { error: 'unauthorized' });
   send(res, 200, user);
 }
@@ -277,8 +279,12 @@ function authRoute(
 // 不是"设备写"。判定集中在 guardUser()/guardAdmin()(会话 + 角色),不散在各处理器。
 
 /** 会话守卫:无有效令牌 → 401 */
-function guardUser(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): PublicUser | null {
-  const user = resolveSession(
+async function guardUser(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<PublicUser | null> {
+  const user = await resolveSession(
     { store: deps.accounts!, adminEmail: deps.adminEmail },
     bearerToken(req.headers['authorization']),
   );
@@ -290,8 +296,12 @@ function guardUser(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Pu
 }
 
 /** 管理员守卫:会话 + role==='admin';未登录 → 401,非管理员 → 403 */
-function guardAdmin(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): PublicUser | null {
-  const user = guardUser(req, res, deps);
+async function guardAdmin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<PublicUser | null> {
+  const user = await guardUser(req, res, deps);
   if (!user) return null;
   if (user.role !== 'admin') {
     send(res, 403, { error: '需要管理员权限' });
@@ -319,13 +329,13 @@ function packView(p: PersonaPack): PersonaPack {
  * GET  /market/packs           → 200 { packs: approved[] }(已上架;需登录)
  * POST /market/packs  {…draft} → 200 { pack }(投稿 → status:'pending';需登录)
  */
-function marketPacksRoute(
+async function marketPacksRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ApiDeps,
   url: URL,
-): void {
-  const user = guardUser(req, res, deps);
+): Promise<void> {
+  const user = await guardUser(req, res, deps);
   if (!user) return;
 
   const method = req.method ?? 'GET';
@@ -338,36 +348,36 @@ function marketPacksRoute(
     if (status && user.role !== 'admin') {
       return send(res, 403, { error: '需要管理员权限' });
     }
-    return send(res, 200, { packs: deps.accounts!.listPacks(statusFilter).map(packView) });
+    const packs = await deps.accounts!.listPacks(statusFilter);
+    return send(res, 200, { packs: packs.map(packView) });
   }
 
   if (method !== 'POST') return send(res, 405, { error: 'use GET or POST' });
 
-  void readJson(req).then((body) => {
-    const r = normalizePack(body);
-    if (!r.ok) return send(res, 400, { error: r.error });
-    const pack = makePack(r.draft, user.user_id, Date.now());
-    deps.accounts!.createPack(pack);
-    send(res, 200, { pack: packView(pack) });
-  });
+  const body = await readJson(req);
+  const r = normalizePack(body);
+  if (!r.ok) return send(res, 400, { error: r.error });
+  const pack = makePack(r.draft, user.user_id, Date.now());
+  await deps.accounts!.createPack(pack);
+  send(res, 200, { pack: packView(pack) });
 }
 
 /** POST /market/packs/:id/subscribe → 200 { subscribed, pack_id };包不存在 / 未上架 → 404 */
-function marketSubscribeRoute(
+async function marketSubscribeRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ApiDeps,
   packId: string,
-): void {
-  const user = guardUser(req, res, deps);
+): Promise<void> {
+  const user = await guardUser(req, res, deps);
   if (!user) return;
   if ((req.method ?? 'GET') !== 'POST') return send(res, 405, { error: 'use POST' });
 
-  const pack = deps.accounts!.packById(packId);
+  const pack = await deps.accounts!.packById(packId);
   if (!pack || pack.status !== 'approved') {
     return send(res, 404, { error: '包不存在或未上架' });
   }
-  deps.accounts!.subscribe(user.user_id, packId);
+  await deps.accounts!.subscribe(user.user_id, packId);
   send(res, 200, { subscribed: true, pack_id: packId });
 }
 
@@ -377,75 +387,82 @@ function marketSubscribeRoute(
  * GET /admin/users → 200 { users: AdminUser[] }
  * 出口用 toAdminUser(带 disabled/created_at,**仍绝不含 salt/hash**)。
  */
-function adminUsersRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): void {
-  const admin = guardAdmin(req, res, deps);
+async function adminUsersRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<void> {
+  const admin = await guardAdmin(req, res, deps);
   if (!admin) return;
   if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'use GET' });
-  send(res, 200, { users: deps.accounts!.listAccounts().map(toAdminUser) });
+  const accounts = await deps.accounts!.listAccounts();
+  send(res, 200, { users: accounts.map(toAdminUser) });
 }
 
 /** POST /admin/users/:id/disable { disabled?: boolean } → 200 { user };默认禁用 */
-function adminUserDisableRoute(
+async function adminUserDisableRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ApiDeps,
   userId: string,
-): void {
-  const admin = guardAdmin(req, res, deps);
+): Promise<void> {
+  const admin = await guardAdmin(req, res, deps);
   if (!admin) return;
   if ((req.method ?? 'GET') !== 'POST') return send(res, 405, { error: 'use POST' });
 
-  const target = deps.accounts!.accountById(userId);
+  const target = await deps.accounts!.accountById(userId);
   if (!target) return send(res, 404, { error: '用户不存在' });
   if (target.user_id === admin.user_id) {
     return send(res, 400, { error: '不能禁用自己' });
   }
 
-  void readJson(req).then((body) => {
-    const raw = (body as { disabled?: unknown }).disabled;
-    // 不传默认禁用(true);显式 false 才解禁
-    const disabled = raw === false ? false : true;
-    deps.accounts!.setDisabled(userId, disabled);
-    send(res, 200, { user: toAdminUser(deps.accounts!.accountById(userId)!) });
-  });
+  const body = await readJson(req);
+  const raw = (body as { disabled?: unknown }).disabled;
+  // 不传默认禁用(true);显式 false 才解禁
+  const disabled = raw === false ? false : true;
+  await deps.accounts!.setDisabled(userId, disabled);
+  const updated = await deps.accounts!.accountById(userId);
+  send(res, 200, { user: toAdminUser(updated!) });
 }
 
 /**
  * GET /admin/packs?status=pending → 200 { packs }
  * status 缺省 → 全部(管理员视角)。
  */
-function adminPacksRoute(
+async function adminPacksRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ApiDeps,
   url: URL,
-): void {
-  const admin = guardAdmin(req, res, deps);
+): Promise<void> {
+  const admin = await guardAdmin(req, res, deps);
   if (!admin) return;
   if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'use GET' });
   const want = url.searchParams.get('status');
   const status: PackStatus | undefined =
     want === 'pending' || want === 'approved' || want === 'rejected' ? want : undefined;
-  send(res, 200, { packs: deps.accounts!.listPacks(status).map(packView) });
+  const packs = await deps.accounts!.listPacks(status);
+  send(res, 200, { packs: packs.map(packView) });
 }
 
 /** POST /admin/packs/:id/(approve|reject) → 200 { pack };包不存在 → 404 */
-function adminPackVerdictRoute(
+async function adminPackVerdictRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ApiDeps,
   packId: string,
   verdict: string,
-): void {
-  const admin = guardAdmin(req, res, deps);
+): Promise<void> {
+  const admin = await guardAdmin(req, res, deps);
   if (!admin) return;
   if ((req.method ?? 'GET') !== 'POST') return send(res, 405, { error: 'use POST' });
 
-  const pack = deps.accounts!.packById(packId);
+  const pack = await deps.accounts!.packById(packId);
   if (!pack) return send(res, 404, { error: '包不存在' });
   const status: PackStatus = verdict === 'approve' ? 'approved' : 'rejected';
-  deps.accounts!.setPackStatus(packId, status);
-  send(res, 200, { pack: packView(deps.accounts!.packById(packId)!) });
+  await deps.accounts!.setPackStatus(packId, status);
+  const updated = await deps.accounts!.packById(packId);
+  send(res, 200, { pack: packView(updated!) });
 }
 
 // ── 杯子社交(#74)────────────────────────────────────────────────
@@ -466,21 +483,29 @@ interface FriendView {
 }
 
 /** 由 cupId 现算派生性格 + streak(绑了才调;与 /cups/:id/today 同口径) */
-function traitsForCup(deps: ApiDeps, cupId: string): { traits: ReturnType<typeof traitRecord>; streak: number } {
+async function traitsForCup(
+  deps: ApiDeps,
+  cupId: string,
+): Promise<{ traits: ReturnType<typeof traitRecord>; streak: number }> {
   const now = Date.now();
   const today = dayKey(now);
-  const agg = deps.store.agg(cupId, today);
-  const recent = deps.store
-    .recentAggs(cupId, today, 7)
-    .filter((d) => d.updated_at > 0 || d.event_count > 0);
+  const agg = await deps.store.agg(cupId, today);
+  const recent = (await deps.store.recentAggs(cupId, today, 7)).filter(
+    (d) => d.updated_at > 0 || d.event_count > 0,
+  );
   const todayOk = !!agg && agg.goal_ml > 0 && agg.drank_ml >= agg.goal_ml;
   const traits = traitRecord(computePersonality(recent, todayOk), now);
   return { traits, streak: agg?.streak ?? 0 };
 }
 
-function friendView(deps: ApiDeps, userId: string, nickname: string, cupId?: string): FriendView {
+async function friendView(
+  deps: ApiDeps,
+  userId: string,
+  nickname: string,
+  cupId?: string,
+): Promise<FriendView> {
   if (!cupId) return { user_id: userId, nickname, traits: null, streak: null };
-  const { traits, streak } = traitsForCup(deps, cupId);
+  const { traits, streak } = await traitsForCup(deps, cupId);
   return { user_id: userId, nickname, traits, streak };
 }
 
@@ -489,33 +514,37 @@ function friendView(deps: ApiDeps, userId: string, nickname: string, cupId?: str
  * POST /social/friends { email } → 200 { friend: FriendView }(按邮箱加好友;需登录)
  *   · 加不存在的邮箱 → 404;加自己 → 400;重复加 → 幂等 200。
  */
-function socialFriendsRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): void {
-  const me = guardUser(req, res, deps);
+async function socialFriendsRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
   if (!me) return;
   const method = req.method ?? 'GET';
 
   if (method === 'GET') {
-    const ids = deps.accounts!.friends(me.user_id);
-    const friends = ids.map((id) => {
-      const a = deps.accounts!.accountById(id);
-      return friendView(deps, id, a?.nickname ?? id, a?.cup_id);
-    });
+    const ids = await deps.accounts!.friends(me.user_id);
+    const friends: FriendView[] = [];
+    for (const id of ids) {
+      const a = await deps.accounts!.accountById(id);
+      friends.push(await friendView(deps, id, a?.nickname ?? id, a?.cup_id));
+    }
     return send(res, 200, { friends });
   }
 
   if (method !== 'POST') return send(res, 405, { error: 'use GET or POST' });
 
-  void readJson(req).then((body) => {
-    const email = typeof (body as { email?: unknown }).email === 'string'
-      ? ((body as { email: string }).email)
-      : '';
-    const target = deps.accounts!.accountByEmail(email);
-    if (!target) return send(res, 404, { error: '找不到该用户' });
-    if (target.user_id === me.user_id) return send(res, 400, { error: '不能加自己' });
-    deps.accounts!.addFriend(me.user_id, target.user_id);
-    send(res, 200, {
-      friend: friendView(deps, target.user_id, target.nickname, target.cup_id),
-    });
+  const body = await readJson(req);
+  const email = typeof (body as { email?: unknown }).email === 'string'
+    ? ((body as { email: string }).email)
+    : '';
+  const target = await deps.accounts!.accountByEmail(email);
+  if (!target) return send(res, 404, { error: '找不到该用户' });
+  if (target.user_id === me.user_id) return send(res, 400, { error: '不能加自己' });
+  await deps.accounts!.addFriend(me.user_id, target.user_id);
+  send(res, 200, {
+    friend: await friendView(deps, target.user_id, target.nickname, target.cup_id),
   });
 }
 
@@ -523,26 +552,29 @@ function socialFriendsRoute(req: IncomingMessage, res: ServerResponse, deps: Api
  * POST   /social/cup { cup_id } → 200 { cup_id }(绑定我的杯子,好友才看得到我的派生性格)
  * DELETE /social/cup             → 200 { cup_id: null }(解绑)
  */
-function socialCupBindRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): void {
-  const me = guardUser(req, res, deps);
+async function socialCupBindRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
   if (!me) return;
   const method = req.method ?? 'GET';
 
   if (method === 'DELETE') {
-    deps.accounts!.setCup(me.user_id, null);
+    await deps.accounts!.setCup(me.user_id, null);
     return send(res, 200, { cup_id: null });
   }
   if (method !== 'POST') return send(res, 405, { error: 'use POST or DELETE' });
 
-  void readJson(req).then((body) => {
-    const raw = (body as { cup_id?: unknown }).cup_id;
-    const cupId = typeof raw === 'string' ? raw.trim() : '';
-    if (cupId.length === 0 || cupId.length > 64) {
-      return send(res, 400, { error: 'cup_id 不合法' });
-    }
-    deps.accounts!.setCup(me.user_id, cupId);
-    send(res, 200, { cup_id: cupId });
-  });
+  const body = await readJson(req);
+  const raw = (body as { cup_id?: unknown }).cup_id;
+  const cupId = typeof raw === 'string' ? raw.trim() : '';
+  if (cupId.length === 0 || cupId.length > 64) {
+    return send(res, 400, { error: 'cup_id 不合法' });
+  }
+  await deps.accounts!.setCup(me.user_id, cupId);
+  send(res, 200, { cup_id: cupId });
 }
 
 /**
@@ -550,46 +582,56 @@ function socialCupBindRoute(req: IncomingMessage, res: ServerResponse, deps: Api
  *   把自己的杯子 + 所有**绑了杯子**的好友凑成一支队,算共同连续达标天数。
  *   没绑杯子 → members 不含自己,也不含未绑的好友(只用能算的成员)。
  */
-function socialTeamRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): void {
-  const me = guardUser(req, res, deps);
+async function socialTeamRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
   if (!me) return;
   if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'use GET' });
 
-  const meAccount = deps.accounts!.accountById(me.user_id);
-  const friendIds = deps.accounts!.friends(me.user_id);
+  const meAccount = await deps.accounts!.accountById(me.user_id);
+  const friendIds = await deps.accounts!.friends(me.user_id);
 
   // 能参与计算的成员:自己 + 绑了杯子的好友(各自一个 cupId)
   const memberCups: string[] = [];
   if (meAccount?.cup_id) memberCups.push(meAccount.cup_id);
   for (const id of friendIds) {
-    const a = deps.accounts!.accountById(id);
+    const a = await deps.accounts!.accountById(id);
     if (a?.cup_id) memberCups.push(a.cup_id);
   }
 
   const today = dayKey(Date.now());
-  const perMember = memberCups.map((cupId) =>
-    deps.store.recentAggs(cupId, today, 30).filter((d) => d.updated_at > 0 || d.event_count > 0),
-  );
+  const perMember: DailyAgg[][] = [];
+  for (const cupId of memberCups) {
+    perMember.push(
+      (await deps.store.recentAggs(cupId, today, 30)).filter(
+        (d) => d.updated_at > 0 || d.event_count > 0,
+      ),
+    );
+  }
   const r = teamStreak(perMember, today, 30);
   send(res, 200, { members: r.members, friends: friendIds.length, streak: r.streak, days: r.days });
 }
 
 // ── 处理器 ─────────────────────────────────────────────────────────
 
-function today(res: ServerResponse, deps: ApiDeps, cupId: string): void {
+async function today(res: ServerResponse, deps: ApiDeps, cupId: string): Promise<void> {
   const now = Date.now();
   const date = dayKey(now);
   const dayEnd = dayStart(date) + 86_400_000;
-  const agg = deps.store.agg(cupId, date);
-  const recentEvents = deps.store.events(cupId, dayStart(date), dayEnd).slice(-8).reverse();
-  const sample = deps.store.latestSample(cupId);
+  const agg = await deps.store.agg(cupId, date);
+  const recentEvents = (await deps.store.events(cupId, dayStart(date), dayEnd)).slice(-8).reverse();
+  const sample = await deps.store.latestSample(cupId);
+  const goal = agg?.goal_ml ?? (await deps.store.goal(cupId));
   send(res, 200, {
     cup_id: cupId,
     date,
     drank_ml: agg?.drank_ml ?? 0,
-    goal_ml: agg?.goal_ml ?? deps.store.goal(cupId),
+    goal_ml: goal,
     drink_count: agg?.drink_count ?? 0,
-    progress: progressPct(agg?.drank_ml ?? 0, agg?.goal_ml ?? deps.store.goal(cupId)),
+    progress: progressPct(agg?.drank_ml ?? 0, goal),
     temp_min_c: agg?.temp_min_c ?? null,
     temp_max_c: agg?.temp_max_c ?? null,
     temp_avg_c: agg?.temp_avg_c ?? null,
@@ -600,12 +642,12 @@ function today(res: ServerResponse, deps: ApiDeps, cupId: string): void {
   });
 }
 
-function series(res: ServerResponse, deps: ApiDeps, cupId: string, url: URL): void {
+async function series(res: ServerResponse, deps: ApiDeps, cupId: string, url: URL): Promise<void> {
   const range = url.searchParams.get('range') ?? 'day';
   const now = Date.now();
   if (range === 'week') {
     const today = dayKey(now);
-    const buckets = deps.store.recentAggs(cupId, today, 7).map((a) => ({
+    const buckets = (await deps.store.recentAggs(cupId, today, 7)).map((a) => ({
       label: a.date.slice(5),
       ts: dayStart(a.date),
       drank_ml: a.drank_ml,
@@ -631,13 +673,13 @@ function series(res: ServerResponse, deps: ApiDeps, cupId: string, url: URL): vo
     last_volume_ml: null as number | null,
   }));
 
-  for (const e of deps.store.events(cupId, from, to)) {
+  for (const e of await deps.store.events(cupId, from, to)) {
     const h = Math.min(23, Math.floor((e.ts - from) / hourMs));
     const b = buckets[h]!;
     if (e.type === 'drink') b.drank_ml += e.amount_ml ?? 0;
     else if (e.type === 'refill') b.refill_ml += e.amount_ml ?? 0;
   }
-  for (const p of deps.store.telemetry(cupId, from, to)) {
+  for (const p of await deps.store.telemetry(cupId, from, to)) {
     if (p.kind !== 'lid' || !p.lid) continue;
     const h = Math.min(23, Math.floor((p.ts - from) / hourMs));
     const b = buckets[h]!;
@@ -659,15 +701,20 @@ function series(res: ServerResponse, deps: ApiDeps, cupId: string, url: URL): vo
   });
 }
 
-function events(res: ServerResponse, deps: ApiDeps, cupId: string, url: URL): void {
+async function events(
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+  url: URL,
+): Promise<void> {
   const from = num(url.searchParams.get('from')) ?? 0;
   const to = num(url.searchParams.get('to')) ?? Date.now();
-  const list = deps.store.events(cupId, from, to);
+  const list = await deps.store.events(cupId, from, to);
   send(res, 200, { cup_id: cupId, from, to, count: list.length, events: list });
 }
 
-function state(res: ServerResponse, deps: ApiDeps, cupId: string): void {
-  const sample = deps.store.latestSample(cupId);
+async function state(res: ServerResponse, deps: ApiDeps, cupId: string): Promise<void> {
+  const sample = await deps.store.latestSample(cupId);
   if (!sample) {
     send(res, 404, { error: 'no data yet', cup_id: cupId });
     return;
@@ -688,10 +735,10 @@ function state(res: ServerResponse, deps: ApiDeps, cupId: string): void {
 async function reportRoute(res: ServerResponse, deps: ApiDeps, cupId: string): Promise<void> {
   const today = dayKey(Date.now());
   // 只把"有数据"的日子算进性格 —— 否则新杯子会被 6 个空白天判成"蔫"
-  const recent = deps.store
-    .recentAggs(cupId, today, 7)
-    .filter((d) => d.updated_at > 0 || d.event_count > 0);
-  const agg = deps.store.agg(cupId, today);
+  const recent = (await deps.store.recentAggs(cupId, today, 7)).filter(
+    (d) => d.updated_at > 0 || d.event_count > 0,
+  );
+  const agg = await deps.store.agg(cupId, today);
   // 今天一条数据都没有 → 没有可讲的事实,明确 404
   if (!agg || agg.event_count === 0) {
     send(res, 404, { error: '今天还没有数据,暂无战报', cup_id: cupId, date: today });
@@ -713,11 +760,16 @@ const HISTORY_DAYS_MAX = 31;
  * 前端可原样展示,不必自己拼句子。**只返回有数据的日子**,没有的不占位。
  * 无任何数据 → 200 + 空 days(不是 404 —— "还没开始记录"是正常态,不是错误)。
  */
-function historyRoute(res: ServerResponse, deps: ApiDeps, cupId: string, url: URL): void {
+async function historyRoute(
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+  url: URL,
+): Promise<void> {
   const raw = Number(url.searchParams.get('days'));
   const days = Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), HISTORY_DAYS_MAX) : HISTORY_DAYS;
   const today = dayKey(Date.now());
-  const recent = deps.store.recentAggs(cupId, today, days);
+  const recent = await deps.store.recentAggs(cupId, today, days);
   const daysOut = historyFacts(recent).map((f) => ({ ...f, headline: historyHeadline(f) }));
   send(res, 200, { cup_id: cupId, days: daysOut, count: daysOut.length });
 }
@@ -731,11 +783,16 @@ function historyRoute(res: ServerResponse, deps: ApiDeps, cupId: string, url: UR
  *
  * 空白日不占位(同 historyRoute);无任何数据 → 200 + 空 days(正常态,非 404)。
  */
-function personalityHistoryRoute(res: ServerResponse, deps: ApiDeps, cupId: string, url: URL): void {
+async function personalityHistoryRoute(
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+  url: URL,
+): Promise<void> {
   const raw = Number(url.searchParams.get('days'));
   const days = Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), HISTORY_DAYS_MAX) : HISTORY_DAYS;
   const today = dayKey(Date.now());
-  const recent = deps.store.recentAggs(cupId, today, days);
+  const recent = await deps.store.recentAggs(cupId, today, days);
   const timeline = dispositionTimeline(recent);
   send(res, 200, { cup_id: cupId, days: timeline, count: timeline.length });
 }
@@ -751,80 +808,94 @@ function personalityHistoryRoute(res: ServerResponse, deps: ApiDeps, cupId: stri
  * traits 的 7 天窗口同 reportRoute / personalityHistoryRoute —— 同一份 computePersonality,
  * 保证养成卡读到的性格与今日战报、脾气变化史末日**同源**。
  */
-function profileRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps, cupId: string): void {
+async function profileRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+): Promise<void> {
   const method = req.method ?? 'GET';
 
   if (method === 'GET') {
-    const stored = deps.profiles!.get(cupId);
+    const stored = await deps.profiles!.get(cupId);
     if (stored) {
       send(res, 200, { cup_id: cupId, nickname: stored.nickname, traits: stored.traits });
       return;
     }
     // 无档案 → 现算(不落盘)
-    send(res, 200, { cup_id: cupId, nickname: '', traits: currentTraits(deps, cupId) });
+    send(res, 200, { cup_id: cupId, nickname: '', traits: await currentTraits(deps, cupId) });
     return;
   }
 
   if (method !== 'PUT') return send(res, 405, { error: 'use GET or PUT' });
 
-  void readJson(req).then((body) => {
-    const raw = (body as { nickname?: unknown }).nickname;
-    if (raw !== undefined && typeof raw !== 'string') {
-      return send(res, 400, { error: 'nickname 需为字符串' });
-    }
-    const nickname = (typeof raw === 'string' ? raw : '').trim().slice(0, PROFILE_NICKNAME_MAX);
-    // traits 由服务端现算 —— 不读客户端任何数值字段
-    const traits = currentTraits(deps, cupId);
-    deps.profiles!.set(cupId, { nickname, traits });
-    send(res, 200, { cup_id: cupId, nickname, traits });
-  });
+  const body = await readJson(req);
+  const raw = (body as { nickname?: unknown }).nickname;
+  if (raw !== undefined && typeof raw !== 'string') {
+    return send(res, 400, { error: 'nickname 需为字符串' });
+  }
+  const nickname = (typeof raw === 'string' ? raw : '').trim().slice(0, PROFILE_NICKNAME_MAX);
+  // traits 由服务端现算 —— 不读客户端任何数值字段
+  const traits = await currentTraits(deps, cupId);
+  await deps.profiles!.set(cupId, { nickname, traits });
+  send(res, 200, { cup_id: cupId, nickname, traits });
 }
 
 const PROFILE_NICKNAME_MAX = 24;
 
 /** 由当下日聚合现算派生性格快照(与战报/性格史同一口径) */
-function currentTraits(deps: ApiDeps, cupId: string): ReturnType<typeof traitRecord> {
+async function currentTraits(
+  deps: ApiDeps,
+  cupId: string,
+): Promise<ReturnType<typeof traitRecord>> {
   const now = Date.now();
   const today = dayKey(now);
-  const recent = deps.store
-    .recentAggs(cupId, today, 7)
-    .filter((d) => d.updated_at > 0 || d.event_count > 0);
-  const agg = deps.store.agg(cupId, today);
+  const recent = (await deps.store.recentAggs(cupId, today, 7)).filter(
+    (d) => d.updated_at > 0 || d.event_count > 0,
+  );
+  const agg = await deps.store.agg(cupId, today);
   const todayOk = !!agg && agg.goal_ml > 0 && agg.drank_ml >= agg.goal_ml;
   return traitRecord(computePersonality(recent, todayOk), now);
 }
 
-function setGoal(req: IncomingMessage, res: ServerResponse, deps: ApiDeps, cupId: string): void {
+async function setGoal(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+): Promise<void> {
   if (req.method !== 'PUT') return send(res, 405, { error: 'use PUT' });
-  readJson(req).then((body) => {
-    const goal = num((body as { goal_ml?: unknown }).goal_ml);
-    if (goal === null || goal <= 0 || goal > 10_000) {
-      send(res, 400, { error: 'goal_ml 需为 0–10000 的正数' });
-      return;
-    }
-    deps.store.setGoal(cupId, goal);
-    send(res, 200, { cup_id: cupId, goal_ml: goal, default_goal_ml: DEFAULT_GOAL_ML });
-  });
+  const body = await readJson(req);
+  const goal = num((body as { goal_ml?: unknown }).goal_ml);
+  if (goal === null || goal <= 0 || goal > 10_000) {
+    return send(res, 400, { error: 'goal_ml 需为 0–10000 的正数' });
+  }
+  await deps.store.setGoal(cupId, goal);
+  send(res, 200, { cup_id: cupId, goal_ml: goal, default_goal_ml: DEFAULT_GOAL_ML });
 }
 
-function setConfig(req: IncomingMessage, res: ServerResponse, deps: ApiDeps, cupId: string): void {
+async function setConfig(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+): Promise<void> {
   if (req.method !== 'POST') return send(res, 405, { error: 'use POST' });
-  readJson(req).then((body) => {
-    const payload = (body ?? {}) as Record<string, unknown>;
-    // 生成一条 config 指令入队(拉取式下行:设备下次上报时捎回)。
-    // 目标设备暂定 lid-*;真机配网后由 pairing 决定。
-    const cmd: Command = {
-      v: 1,
-      cmd_id: `cfg-${Date.now()}`,
-      target: 'lid-A1B2C3',
-      ts: Date.now(),
-      expires_at: Date.now() + 24 * 3_600_000,
-      type: 'config',
-      payload,
-    };
-    deps.commands.enqueue(cmd);
-    send(res, 202, { cup_id: cupId, queued: cmd });
-  });
+  const body = await readJson(req);
+  const payload = (body ?? {}) as Record<string, unknown>;
+  // 生成一条 config 指令入队(拉取式下行:设备下次上报时捎回)。
+  // 目标设备暂定 lid-*;真机配网后由 pairing 决定。
+  const cmd: Command = {
+    v: 1,
+    cmd_id: `cfg-${Date.now()}`,
+    target: 'lid-A1B2C3',
+    ts: Date.now(),
+    expires_at: Date.now() + 24 * 3_600_000,
+    type: 'config',
+    payload,
+  };
+  deps.commands.enqueue(cmd);
+  send(res, 202, { cup_id: cupId, queued: cmd });
 }
 
 /**
@@ -833,32 +904,36 @@ function setConfig(req: IncomingMessage, res: ServerResponse, deps: ApiDeps, cup
  * 鉴权:写端点,配了 CUP_API_KEY 时须带 x-api-key(见文件头);问句长度硬限,超限 400 —— 不让超长输入进提示词。
  * 回答永不空白:模型缺席/出错/守卫拦下 → runChat 内部回退确定性模板句。
  */
-function askRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps, cupId: string): void {
+async function askRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+): Promise<void> {
   if (req.method !== 'POST') return send(res, 405, { error: 'use POST' });
-  readJson(req).then(async (body) => {
-    const q = (body as { q?: unknown }).q;
-    if (typeof q !== 'string' || q.trim().length === 0) {
-      send(res, 400, { error: 'q 需为非空字符串' });
-      return;
-    }
-    if (q.length > MAX_QUESTION_CHARS) {
-      send(res, 400, { error: `q 过长(上限 ${MAX_QUESTION_CHARS} 字)` });
-      return;
-    }
-    const chatDeps: ChatDeps = {
-      store: deps.store,
-      commands: deps.commands,
-      chat: deps.chatLlm!,
-      memory: deps.chatMemory!,
-      log: deps.log ?? (() => {}),
-    };
-    try {
-      const answer = await runChat(chatDeps, { cupId, question: q.trim() });
-      send(res, 200, { cup_id: cupId, answer });
-    } catch (err) {
-      send(res, 500, { error: (err as Error).message });
-    }
-  });
+  const body = await readJson(req);
+  const q = (body as { q?: unknown }).q;
+  if (typeof q !== 'string' || q.trim().length === 0) {
+    send(res, 400, { error: 'q 需为非空字符串' });
+    return;
+  }
+  if (q.length > MAX_QUESTION_CHARS) {
+    send(res, 400, { error: `q 过长(上限 ${MAX_QUESTION_CHARS} 字)` });
+    return;
+  }
+  const chatDeps: ChatDeps = {
+    store: deps.store,
+    commands: deps.commands,
+    chat: deps.chatLlm!,
+    memory: deps.chatMemory!,
+    log: deps.log ?? (() => {}),
+  };
+  try {
+    const answer = await runChat(chatDeps, { cupId, question: q.trim() });
+    send(res, 200, { cup_id: cupId, answer });
+  } catch (err) {
+    send(res, 500, { error: (err as Error).message });
+  }
 }
 
 /**
@@ -866,19 +941,23 @@ function askRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps, cupI
  * body 形状见 http-adapter.ts(normalizeEnvelope 收 frame/frames/裸数组)。
  * 走的是**同一条管线**;帧不过契约 §2 就 400,并回逐条原因。
  */
-function ingestRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps, cupId: string): void {
+async function ingestRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+): Promise<void> {
   if (req.method !== 'POST') return send(res, 405, { error: 'use POST' });
-  readJson(req).then((body) => {
-    const r = ingestEnvelope(body, deps.pipeline, cupId);
-    // 整批没一帧合规 → 400(调用方应立即知道发错了);有合规也有脏的 → 200 带计数
-    const status = r.accepted + r.deduped === 0 && r.rejected > 0 ? 400 : 200;
-    send(res, status, {
-      cup_id: cupId,
-      accepted: r.accepted,
-      deduped: r.deduped,
-      rejected: r.rejected,
-      errors: r.errors,
-    });
+  const body = await readJson(req);
+  const r = await ingestEnvelope(body, deps.pipeline, cupId);
+  // 整批没一帧合规 → 400(调用方应立即知道发错了);有合规也有脏的 → 200 带计数
+  const status = r.accepted + r.deduped === 0 && r.rejected > 0 ? 400 : 200;
+  send(res, status, {
+    cup_id: cupId,
+    accepted: r.accepted,
+    deduped: r.deduped,
+    rejected: r.rejected,
+    errors: r.errors,
   });
 }
 

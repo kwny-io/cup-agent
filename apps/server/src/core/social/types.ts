@@ -82,34 +82,38 @@ export interface Friendship {
   created_at: number;
 }
 
+/**
+ * 账号 / 会话 / 市场 / 好友的统一存储口。**全方法返回 Promise** —— 第 1 阶段
+ * 异步化(为第 2 阶段换 Postgres 实现铺路)。内存实现无真实 I/O,加 `async` 即可。
+ */
 export interface AccountsStore {
   // ── 账号 ──
-  createAccount(a: Account): void;
-  accountByEmail(email: string): Account | null;
-  accountById(id: string): Account | null;
-  listAccounts(): Account[];
-  setDisabled(id: string, v: boolean): void;
+  createAccount(a: Account): Promise<void>;
+  accountByEmail(email: string): Promise<Account | null>;
+  accountById(id: string): Promise<Account | null>;
+  listAccounts(): Promise<Account[]>;
+  setDisabled(id: string, v: boolean): Promise<void>;
   /** 绑定 / 解绑用户的杯子(#74 好友互见的口子);cupId 为 null = 解绑 */
-  setCup(id: string, cupId: string | null): void;
+  setCup(id: string, cupId: string | null): Promise<void>;
 
   // ── 会话 ──
-  putSession(s: Session): void;
-  session(token: string): Session | null;
-  dropSession(token: string): void;
+  putSession(s: Session): Promise<void>;
+  session(token: string): Promise<Session | null>;
+  dropSession(token: string): Promise<void>;
 
   // ── 市场包 ──
-  createPack(p: PersonaPack): void;
-  packById(id: string): PersonaPack | null;
-  listPacks(status?: PackStatus): PersonaPack[];
-  setPackStatus(id: string, status: PackStatus): void;
+  createPack(p: PersonaPack): Promise<void>;
+  packById(id: string): Promise<PersonaPack | null>;
+  listPacks(status?: PackStatus): Promise<PersonaPack[]>;
+  setPackStatus(id: string, status: PackStatus): Promise<void>;
 
   // ── 订阅 ──
-  subscribe(userId: string, packId: string): void;
-  subscriptions(userId: string): string[];
+  subscribe(userId: string, packId: string): Promise<void>;
+  subscriptions(userId: string): Promise<string[]>;
 
   // ── 好友 ──
-  addFriend(a: string, b: string): void;
-  friends(userId: string): string[];
+  addFriend(a: string, b: string): Promise<void>;
+  friends(userId: string): Promise<string[]>;
 
   flush(): Promise<void>;
 }

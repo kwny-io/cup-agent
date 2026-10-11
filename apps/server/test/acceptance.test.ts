@@ -42,14 +42,14 @@ function simulateDay(): { frames: UpstreamFrame[]; startMs: number; events: numb
 
 // ── 验收 1:跑一天 → 数字对得上 ───────────────────────────────────
 
-test('验收1:模拟器一天数据 → 今日已喝/次数/水温区间算得出', () => {
+test('验收1:模拟器一天数据 → 今日已喝/次数/水温区间算得出', async () => {
   const store = new MemoryStore();
   const p = new Pipeline(store);
   const { frames, startMs } = simulateDay();
-  for (const f of frames) p.ingest(f);
+  for (const f of frames) await p.ingest(f);
 
   const date = dayKey(startMs);
-  const agg = store.agg(CUP_ID, date);
+  const agg = await store.agg(CUP_ID, date);
   assert.ok(agg, '应有今天的聚合');
 
   // 脚本 7 次喝水共 730ml;底座称重带噪声,给 ±20ml 容差
@@ -66,23 +66,25 @@ test('验收1:模拟器一天数据 → 今日已喝/次数/水温区间算得�
   assert.ok(agg.refill_ml > 0, '应有续杯量');
 });
 
-test('验收1(续):时间加速不影响数字 —— 同 seed 两次跑结果一致', () => {
-  const run = (scale: number) => {
+test('验收1(续):时间加速不影响数字 —— 同 seed 两次跑结果一致', async () => {
+  const run = async (scale: number) => {
     const store = new MemoryStore();
     const p = new Pipeline(store);
+    const pending: Promise<boolean>[] = [];
     const startMs = dayStart(dayKey(Date.now()));
     const engine = new Engine({
       config: { seed: 42, scale, startMs, reportMs: 60_000, verbose: false },
       steps: typicalDay(),
       sink: (f) => {
-        for (const ef of toFrames(f)) p.ingest(ef);
+        for (const ef of toFrames(f)) pending.push(p.ingest(ef));
       },
     });
     engine.runToEnd(60_000);
-    return store.agg(CUP_ID, dayKey(startMs));
+    await Promise.all(pending);
+    return await store.agg(CUP_ID, dayKey(startMs));
   };
-  const a = run(600);
-  const b = run(6000);
+  const a = await run(600);
+  const b = await run(6000);
   assert.equal(a?.drank_ml, b?.drank_ml, '加速倍率不应改变喝水量');
   assert.equal(a?.drink_count, b?.drink_count);
 });
@@ -92,7 +94,7 @@ test('验收1(续):时间加速不影响数字 —— 同 seed 两次跑结果�
 test('验收2:GET /today 与 /series 返回合理数据', async () => {
   const app = createApp({ log: () => {} });
   const { frames, startMs } = simulateDay();
-  for (const f of frames) app.pipeline.ingest(f);
+  for (const f of frames) await app.pipeline.ingest(f);
   const port = await app.listen(0);
 
   try {
@@ -270,7 +272,7 @@ test('验收4:sim-adapter 拒收不合契约报文,合法报文照常进库', as
       '应有拒收日志',
     );
     // 合法那条真的进库了
-    assert.equal(app.store.latestSample(CUP_ID)?.volume_ml, 200);
+    assert.equal((await app.store.latestSample(CUP_ID))?.volume_ml, 200);
     void port;
   } finally {
     await app.close();
@@ -283,7 +285,7 @@ test('验收4:sim-adapter 拒收不合契约报文,合法报文照常进库', as
 test('验收(M4):GET /report/latest 数字与 /today 一致,且带性格', async () => {
   const app = createApp({ log: () => {} });
   const { frames } = simulateDay();
-  for (const f of frames) app.pipeline.ingest(f);
+  for (const f of frames) await app.pipeline.ingest(f);
   const port = await app.listen(0);
   try {
     const base = `http://127.0.0.1:${port}/cups/${CUP_ID}`;

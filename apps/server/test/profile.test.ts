@@ -81,7 +81,7 @@ test('GET profile:无落盘档案 → 200 + nickname 空 + 现算 traits(不落�
     assert.ok(j.traits.updated_at > 0, '快照应带生成时刻');
 
     // 只读不写:再取一次仍然没有落盘档案
-    assert.equal(app.profiles.get(CUP), null, 'GET 不应把现算结果落盘');
+    assert.equal(await app.profiles.get(CUP), null, 'GET 不应把现算结果落盘');
   } finally {
     await app.close();
   }
@@ -140,7 +140,7 @@ test('PUT profile:客户端伪造的 traits 数值一律忽略(服务端现算)'
     const j = (await r.json()) as ProfileBody;
     assert.notEqual(j.traits.disposition, 'smug', '不得接受客户端伪造的 smug');
     assert.notEqual(j.traits.streak, 999, '不得接受伪造的 streak');
-    assert.equal(app.profiles.get(CUP)?.traits.streak, j.traits.streak, '落盘的也是现算值');
+    assert.equal((await app.profiles.get(CUP))?.traits.streak, j.traits.streak, '落盘的也是现算值');
   } finally {
     await app.close();
   }
@@ -206,7 +206,7 @@ test('持久化:FileProfileStore 落 state.json,新实例读回', async () => {
     const base1 = `http://127.0.0.1:${port1}`;
     seedDrink(app1, dayKey(Date.now()), GOAL);
     assert.equal((await putProfile(base1, { nickname: '豆豆' })).status, 200);
-    const before = app1.profiles.get(CUP)!.traits;
+    const before = (await app1.profiles.get(CUP))!.traits;
     await app1.close(); // flush
     app1 = null;
 
@@ -225,28 +225,28 @@ test('持久化:FileProfileStore 落 state.json,新实例读回', async () => {
   }
 });
 
-test('MemoryProfileStore:get 未命中 → null;set 后 get 回读', () => {
+test('MemoryProfileStore:get 未命中 → null;set 后 get 回读', async () => {
   const s = new MemoryProfileStore();
-  assert.equal(s.get('nope'), null);
+  assert.equal(await s.get('nope'), null);
   const rec = {
     nickname: 'n',
     traits: { disposition: 'normal' as const, level: 0.5, streak: 0, warmth: 0.5, refill_habit: 0.5, updated_at: 1 },
   };
-  s.set('c1', rec);
-  assert.deepEqual(s.get('c1'), rec);
+  await s.set('c1', rec);
+  assert.deepEqual(await s.get('c1'), rec);
 });
 
-test('FileProfileStore:包装 FilePersistence 的 traits 段', () => {
+test('FileProfileStore:包装 FilePersistence 的 traits 段', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cup-profile-store-'));
   try {
     const fp = new FilePersistence(dir);
     const s = new FileProfileStore(fp);
-    assert.equal(s.get(CUP), null);
-    s.set(CUP, {
+    assert.equal(await s.get(CUP), null);
+    await s.set(CUP, {
       nickname: 'x',
       traits: { disposition: 'smug', level: 1, streak: 3, warmth: 1, refill_habit: 1, updated_at: 42 },
     });
-    assert.equal(s.get(CUP)?.traits.updated_at, 42);
+    assert.equal((await s.get(CUP))?.traits.updated_at, 42);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

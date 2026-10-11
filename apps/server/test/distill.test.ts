@@ -55,9 +55,9 @@ function drink(ts: number, ml: number): CupEvent {
 }
 
 /** 塞 n 条无数字的对话轮(数字留白,好让守卫测试干净) */
-function seedTurns(memory: ChatStore, n: number, ts = NOW): void {
+async function seedTurns(memory: ChatStore, n: number, ts = NOW): Promise<void> {
   for (let i = 0; i < n; i++) {
-    memory.appendTurn({ cup_id: CUP, ts, role: i % 2 === 0 ? 'user' : 'assistant', text: i % 2 === 0 ? '今天喝得怎么样' : '还行吧' });
+    await memory.appendTurn({ cup_id: CUP, ts, role: i % 2 === 0 ? 'user' : 'assistant', text: i % 2 === 0 ? '今天喝得怎么样' : '还行吧' });
   }
 }
 
@@ -81,24 +81,24 @@ function deps(opts: { chat?: ChatDeps['chat']; memory?: MemoryChatStore; store?:
 
 test('蒸馏:没攒够新轮 → 返回 null,不写画像', async () => {
   const { memory, deps: d } = deps();
-  seedTurns(memory, 3); // < 默认阈值 8
+  await seedTurns(memory, 3); // < 默认阈值 8
   const r = await distillProfile(d, { cupId: CUP, nowMs: NOW });
   assert.equal(r, null);
-  assert.equal(memory.profile(CUP), null);
+  assert.equal(await memory.profile(CUP), null);
 });
 
 test('蒸馏:攒够 + 模型给合法画像 → 采用,source=llm,水位推进', async () => {
   const { memory, deps: d } = deps();
-  seedTurns(memory, 8);
+  await seedTurns(memory, 8);
   const r = await distillProfile(d, { cupId: CUP, nowMs: NOW });
   assert.equal(r?.source, 'llm');
-  assert.equal(memory.profile(CUP), '主人喜欢小口慢饮,常在下午犯懒。');
-  assert.equal(memory.lastDistilledAt(CUP), NOW);
+  assert.equal(await memory.profile(CUP), '主人喜欢小口慢饮,常在下午犯懒。');
+  assert.equal(await memory.lastDistilledAt(CUP), NOW);
 });
 
 test('蒸馏:再蒸要等新轮 —— 水位推进后,same 时刻再蒸 → null', async () => {
   const { memory, deps: d } = deps();
-  seedTurns(memory, 8);
+  await seedTurns(memory, 8);
   assert.ok(await distillProfile(d, { cupId: CUP, nowMs: NOW }));
   assert.equal(await distillProfile(d, { cupId: CUP, nowMs: NOW + 60_000 }), null);
 });
@@ -107,9 +107,9 @@ test('蒸馏:水位之后又有新轮 → 可以再蒸', async () => {
   const { memory, deps: d } = deps({
     chat: new MockChatLlm([say('a'), say('b')]),
   });
-  seedTurns(memory, 8);
+  await seedTurns(memory, 8);
   assert.ok(await distillProfile(d, { cupId: CUP, nowMs: NOW }));
-  seedTurns(memory, 8, NOW + 60_000); // 新轮,ts 晚于水位
+  await seedTurns(memory, 8, NOW + 60_000); // 新轮,ts 晚于水位
   const r = await distillProfile(d, { cupId: CUP, nowMs: NOW + 120_000 });
   assert.equal(r?.source, 'llm');
 });
@@ -118,10 +118,10 @@ test('蒸馏:水位之后又有新轮 → 可以再蒸', async () => {
 
 test('蒸馏:模型给凭空数字 → 守卫拦下,落模板(source=template)', async () => {
   const { memory, deps: d } = deps({ chat: new MockChatLlm([say('主人昨天喝了 8888ml,很能喝。')]) });
-  seedTurns(memory, 8); // 历史里没有 8888
+  await seedTurns(memory, 8); // 历史里没有 8888
   const r = await distillProfile(d, { cupId: CUP, nowMs: NOW });
   assert.equal(r?.source, 'template');
-  assert.ok(!memory.profile(CUP)?.includes('8888'));
+  assert.ok(!(await memory.profile(CUP))?.includes('8888'));
 });
 
 test('蒸馏:模型不可用(NullChatLlm)→ 模板兜底,数字来自真实日聚合', async () => {
@@ -129,12 +129,12 @@ test('蒸馏:模型不可用(NullChatLlm)→ 模板兜底,数字来自真实日�
   store.applyEventToAgg(drink(NOW, 400));
   const memory = new MemoryChatStore();
   const d: DistillDeps = { store, memory, chat: new NullChatLlm(), log: () => {}, now: () => NOW };
-  seedTurns(memory, 8);
+  await seedTurns(memory, 8);
 
   const r = await distillProfile(d, { cupId: CUP, nowMs: NOW });
   assert.equal(r?.source, 'template');
-  assert.match(memory.profile(CUP) ?? '', /400ml/); // 数字来自真实聚合
-  assert.match(memory.profile(CUP) ?? '', /1500ml/); // 目标
+  assert.match((await memory.profile(CUP)) ?? '', /400ml/); // 数字来自真实聚合
+  assert.match((await memory.profile(CUP)) ?? '', /1500ml/); // 目标
 });
 
 test('蒸馏:模型可复述历史里的数字(不误伤)', async () => {
@@ -152,7 +152,7 @@ test('蒸馏:模型可复述历史里的数字(不误伤)', async () => {
   };
   const r = await distillProfile(d, { cupId: CUP, nowMs: NOW });
   assert.equal(r?.source, 'llm'); // 250 来自历史 → 不算凭空
-  assert.match(memory.profile(CUP) ?? '', /250/);
+  assert.match((await memory.profile(CUP)) ?? '', /250/);
 });
 
 // ── 纯函数单测 ───────────────────────────────────────────────────
@@ -170,21 +170,21 @@ test('acceptProfile:含不在 allow 里的数字 → 拒', () => {
   assert.equal(acceptProfile('喝了 250ml', new Set(['250'])).ok, true);
 });
 
-test('distillDue:按 ts 阈值数新轮', () => {
+test('distillDue:按 ts 阈值数新轮', async () => {
   const memory = new MemoryChatStore();
-  seedTurns(memory, 4, NOW);
-  assert.equal(distillDue(memory, CUP, 0, 4), true);
-  assert.equal(distillDue(memory, CUP, NOW, 1), false); // 没有 ts > NOW 的
-  assert.equal(distillDue(memory, CUP, 0, 5), false);
+  await seedTurns(memory, 4, NOW);
+  assert.equal(await distillDue(memory, CUP, 0, 4), true);
+  assert.equal(await distillDue(memory, CUP, NOW, 1), false); // 没有 ts > NOW 的
+  assert.equal(await distillDue(memory, CUP, 0, 5), false);
 });
 
-test('templateProfile:含真实数字;无数据也不空', () => {
+test('templateProfile:含真实数字;无数据也不空', async () => {
   const store = new MemoryStore();
-  const t0 = templateProfile(store, CUP, NOW); // 没有任何事件
+  const t0 = await templateProfile(store, CUP, NOW); // 没有任何事件
   assert.ok(t0.length > 0);
   assert.match(t0, /1500ml/); // 目标仍在
   store.applyEventToAgg(drink(NOW, 300));
-  assert.match(templateProfile(store, CUP, NOW), /300ml/);
+  assert.match(await templateProfile(store, CUP, NOW), /300ml/);
 });
 
 // ── 跨重启存活 ───────────────────────────────────────────────────
@@ -198,15 +198,15 @@ test('蒸馏:画像 + 水位跨重启存活(FileChatStore)', async () => {
     const p1 = new FilePersistence(dir);
     const m1 = new FileChatStore(p1);
     const d1: DistillDeps = { store, memory: m1, chat: new NullChatLlm(), log: () => {}, now: () => NOW };
-    seedTurns(m1, 8);
+    await seedTurns(m1, 8);
     assert.ok(await distillProfile(d1, { cupId: CUP, nowMs: NOW }));
-    const before = m1.profile(CUP);
+    const before = await m1.profile(CUP);
     await p1.flush();
 
     const p2 = new FilePersistence(dir);
     const m2 = new FileChatStore(p2);
-    assert.equal(m2.profile(CUP), before); // 画像读回
-    assert.equal(m2.lastDistilledAt(CUP), NOW); // 水位读回
+    assert.equal(await m2.profile(CUP), before); // 画像读回
+    assert.equal(await m2.lastDistilledAt(CUP), NOW); // 水位读回
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -217,7 +217,7 @@ test('蒸馏:画像 + 水位跨重启存活(FileChatStore)', async () => {
 test('接线:ProactiveScheduler.tick 顺带推进蒸馏(无需开口也蒸)', async () => {
   const store = new MemoryStore();
   const memory = new MemoryChatStore();
-  seedTurns(memory, 8);
+  await seedTurns(memory, 8);
   const sch = new ProactiveScheduler({
     store,
     commands: new CommandQueue(),
@@ -231,15 +231,15 @@ test('接线:ProactiveScheduler.tick 顺带推进蒸馏(无需开口也蒸)', as
   });
   const fired = await sch.tick(NOW); // 没事件 → 不开口
   assert.equal(fired.length, 0);
-  assert.equal(memory.profile(CUP), '主人小口慢饮。'); // 但蒸馏发生了
+  assert.equal(await memory.profile(CUP), '主人小口慢饮。'); // 但蒸馏发生了
 });
 
 // ── 闭环:蒸馏 → 读端守卫 ────────────────────────────────────────
 
 test('闭环:蒸馏出的画像交给读端,复述画像数字能过守卫', async () => {
   const memory = new MemoryChatStore();
-  memory.appendTurn({ cup_id: CUP, ts: NOW, role: 'user', text: '我一般一次喝 250ml' });
-  for (let i = 0; i < 8; i++) memory.appendTurn({ cup_id: CUP, ts: NOW, role: 'assistant', text: '哦' });
+  await memory.appendTurn({ cup_id: CUP, ts: NOW, role: 'user', text: '我一般一次喝 250ml' });
+  for (let i = 0; i < 8; i++) await memory.appendTurn({ cup_id: CUP, ts: NOW, role: 'assistant', text: '哦' });
 
   const store = new MemoryStore();
   const d: ChatDeps = {

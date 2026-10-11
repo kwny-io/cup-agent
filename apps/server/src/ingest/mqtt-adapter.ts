@@ -118,7 +118,15 @@ export function startMqttAdapter(opts: MqttAdapterOptions): MqttAdapterHandle {
       return;
     }
 
-    if (opts.pipeline.ingest(parsed.data)) accepted += 1;
+    // ingest 现在 async:不 await(同 sim-adapter),尾挂 catch 防未捕获拒绝
+    void opts.pipeline
+      .ingest(parsed.data)
+      .then((ok) => {
+        if (ok) accepted += 1;
+      })
+      .catch((err: unknown) => {
+        log(`[mqtt-adapter] 入站异常:${err instanceof Error ? err.message : String(err)}`, 'error');
+      });
   };
 
   /**

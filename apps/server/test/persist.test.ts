@@ -56,7 +56,7 @@ test('持久化:MemoryStore 钩子 → 落盘 → 新 store 恢复目标(T3 不�
     // 第二次"进程":从磁盘恢复
     const p2 = new FilePersistence(dir);
     const s2 = new MemoryStore({ goals: p2.goals() });
-    assert.equal(s2.goal(CUP), 2500);
+    assert.equal(await s2.goal(CUP), 2500);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -67,13 +67,13 @@ test('持久化:对话轮写入 → 新 FileChatStore 读回', async () => {
   try {
     const p1 = new FilePersistence(dir);
     const cs1 = new FileChatStore(p1);
-    cs1.appendTurn(turn('user', '今天喝得怎么样', 1));
-    cs1.appendTurn(turn('assistant', '才 720ml 呀', 2));
+    await cs1.appendTurn(turn('user', '今天喝得怎么样', 1));
+    await cs1.appendTurn(turn('assistant', '才 720ml 呀', 2));
     await p1.flush();
 
     const p2 = new FilePersistence(dir);
     const cs2 = new FileChatStore(p2);
-    const recent = cs2.recentTurns(CUP, 10);
+    const recent = await cs2.recentTurns(CUP, 10);
     assert.equal(recent.length, 2);
     assert.equal(recent[0]!.text, '今天喝得怎么样');
     assert.equal(recent[1]!.text, '才 720ml 呀');
@@ -97,7 +97,7 @@ test('持久化:原子写 —— tmp 文件不残留', async () => {
   const dir = tmp();
   try {
     const p = new FilePersistence(dir);
-    p.setGoal(CUP, 1800);
+    await p.setGoal(CUP, 1800);
     await p.flush();
     // 落盘后只剩 state.json,tmp 已被 rename 消耗
     const raw = readFileSync(join(dir, 'state.json'), 'utf8');
@@ -133,12 +133,12 @@ test('记忆:两个实现(内存 / 文件)在相同输入下给相同窗口', as
     const mem = new MemoryChatStore();
     const file = new FileChatStore(new FilePersistence(dir));
     for (let i = 0; i < 5; i++) {
-      mem.appendTurn(turn('user', `m${i}`, i));
-      file.appendTurn(turn('user', `m${i}`, i));
+      await mem.appendTurn(turn('user', `m${i}`, i));
+      await file.appendTurn(turn('user', `m${i}`, i));
     }
     assert.deepEqual(
-      mem.recentTurns(CUP, 3).map((t) => t.text),
-      file.recentTurns(CUP, 3).map((t) => t.text),
+      (await mem.recentTurns(CUP, 3)).map((t) => t.text),
+      (await file.recentTurns(CUP, 3)).map((t) => t.text),
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

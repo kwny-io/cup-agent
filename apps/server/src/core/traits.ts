@@ -13,19 +13,19 @@ import type { FilePersistence, ProfileRecord } from './persist.ts';
 export type { ProfileRecord };
 
 export interface ProfileStore {
-  get(cupId: string): ProfileRecord | null;
-  set(cupId: string, r: ProfileRecord): void;
+  get(cupId: string): Promise<ProfileRecord | null>;
+  set(cupId: string, r: ProfileRecord): Promise<void>;
   flush(): Promise<void>;
 }
 
 export class MemoryProfileStore implements ProfileStore {
   private map = new Map<string, ProfileRecord>();
 
-  get(cupId: string): ProfileRecord | null {
+  async get(cupId: string): Promise<ProfileRecord | null> {
     return this.map.get(cupId) ?? null;
   }
 
-  set(cupId: string, r: ProfileRecord): void {
+  async set(cupId: string, r: ProfileRecord): Promise<void> {
     this.map.set(cupId, r);
   }
 
@@ -41,11 +41,11 @@ export class FileProfileStore implements ProfileStore {
     this.file = file;
   }
 
-  get(cupId: string): ProfileRecord | null {
+  async get(cupId: string): Promise<ProfileRecord | null> {
     return this.file.traits()[cupId] ?? null;
   }
 
-  set(cupId: string, r: ProfileRecord): void {
+  async set(cupId: string, r: ProfileRecord): Promise<void> {
     this.file.setTraits(cupId, r);
   }
 

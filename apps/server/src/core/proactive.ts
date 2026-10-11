@@ -92,12 +92,12 @@ export class ProactiveScheduler {
       await this.maybeDistill(cupId, nowMs); // 先推进长期画像(与"要不要开口"无关)
       // 优先级:身体语料(刚被摔/烫/没电/被忘)> 欠水提醒。
       // 两者**共用同一个冷却**(T16):一旦开口,最近 2h 内都不再说第二句。
-      const cue = this.isQuiet(nowMs) ? null : this.bodyCue(cupId, nowMs);
-      if (cue && !this.inCooldown(cupId, nowMs)) {
+      const cue = this.isQuiet(nowMs) ? null : await this.bodyCue(cupId, nowMs);
+      if (cue && !(await this.inCooldown(cupId, nowMs))) {
         fired.push(await this.speakBody(cupId, nowMs, cue));
         continue;
       }
-      if (!this.shouldSpeak(cupId, nowMs)) continue;
+      if (!(await this.shouldSpeak(cupId, nowMs))) continue;
       fired.push(await this.speak(cupId, nowMs));
     }
     return fired;
@@ -108,14 +108,14 @@ export class ProactiveScheduler {
    * 只看上一次 proactive 之后的窗口 —— 否则一个早上的旧 shock 会在冷却走完后反复重提。
    * 有冲击/过热/低电事件 → 优先;否则看是否静默太久(被忘)。都没有 → null。
    */
-  private bodyCue(cupId: string, nowMs: number): BodyCueHit | null {
+  private async bodyCue(cupId: string, nowMs: number): Promise<BodyCueHit | null> {
     const t = this.deps.store;
-    const last = this.lastProactiveTs(cupId);
+    const last = await this.lastProactiveTs(cupId);
     const from = Math.max(dayStart(dayKey(nowMs)), last); // 上次开口之后(且不早于今天)
-    const hit = bodyCueFromEvents(t.events(cupId, from, nowMs + 1));
+    const hit = bodyCueFromEvents(await t.events(cupId, from, nowMs + 1));
     if (hit) return hit;
     // 无显著事件 → 看"被忘"(静默判定基于遥测最新时刻,与开口无关,故用全天)
-    const sample = t.latestSample(cupId);
+    const sample = await t.latestSample(cupId);
     return abandonedCue(sample ? sample.ts : null, nowMs);
   }
 
@@ -126,8 +126,8 @@ export class ProactiveScheduler {
   }
 
   /** 记忆里最后一条 proactive 的时刻;没有 → 0 */
-  private lastProactiveTs(cupId: string): number {
-    const recent = this.deps.memory.recentTurns(cupId, 50);
+  private async lastProactiveTs(cupId: string): Promise<number> {
+    const recent = await this.deps.memory.recentTurns(cupId, 50);
     for (let i = recent.length - 1; i >= 0; i--) {
       if (recent[i]!.role === 'proactive') return recent[i]!.ts;
     }
@@ -153,24 +153,24 @@ export class ProactiveScheduler {
     }
   }
 
-  private shouldSpeak(cupId: string, nowMs: number): boolean {
+  private async shouldSpeak(cupId: string, nowMs: number): Promise<boolean> {
     const hour = new Date(nowMs).getHours();
     if (hour < HOUR_FROM || hour > HOUR_TO) return false;
 
     const t = this.deps.store;
     const date = dayKey(nowMs);
-    const agg = t.agg(cupId, date);
+    const agg = await t.agg(cupId, date);
     if (!agg || agg.event_count === 0) return false; // 今天还没数据 → 不硬找话
 
-    const goal = agg.goal_ml > 0 ? agg.goal_ml : t.goal(cupId);
+    const goal = agg.goal_ml > 0 ? agg.goal_ml : await t.goal(cupId);
     if (!(goal > 0 && agg.drank_ml < THIRSTY_RATIO * goal)) return false;
 
-    return !this.inCooldown(cupId, nowMs);
+    return !(await this.inCooldown(cupId, nowMs));
   }
 
   /** 冷却:记忆里最后一条 proactive 距今 < 2h 就闭嘴 */
-  private inCooldown(cupId: string, nowMs: number): boolean {
-    const recent = this.deps.memory.recentTurns(cupId, 50);
+  private async inCooldown(cupId: string, nowMs: number): Promise<boolean> {
+    const recent = await this.deps.memory.recentTurns(cupId, 50);
     for (let i = recent.length - 1; i >= 0; i--) {
       if (recent[i]!.role === 'proactive') {
         return nowMs - recent[i]!.ts < COOLDOWN_MS;
@@ -191,7 +191,7 @@ export class ProactiveScheduler {
       },
       { cupId, question: '（自己开口提醒主人喝水）', proactive: true },
     );
-    return this.broadcast(cupId, nowMs, answer, `主动开口[${cupId}]: ${answer.text}`);
+    return await this.broadcast(cupId, nowMs, answer, `主动开口[${cupId}]: ${answer.text}`);
   }
 
   /**
@@ -213,13 +213,18 @@ export class ProactiveScheduler {
     );
     this.deps.log(`身体语料[${cupId}](${hit.evidence}): ${answer.text}`, 'info');
     // 广播仍用 get_today 的事实(前端已有的 proactive 帧契约不动;body 细节在 text 里)
-    return this.broadcast(cupId, nowMs, answer);
+    return await this.broadcast(cupId, nowMs, answer);
   }
 
   /** 广播主动帧(前端既有契约:payload = {text,ts,source,facts});`logLine` 给了就顺带记一条 */
-  private broadcast(cupId: string, nowMs: number, answer: ChatAnswer, logLine?: string): ChatAnswer {
+  private async broadcast(
+    cupId: string,
+    nowMs: number,
+    answer: ChatAnswer,
+    logLine?: string,
+  ): Promise<ChatAnswer> {
     const ctx: ToolCtx = { store: this.deps.store, commands: this.deps.commands, now: () => nowMs };
-    const facts = getTool('get_today')!.run(ctx, cupId, {}).output;
+    const facts = (await getTool('get_today')!.run(ctx, cupId, {})).output;
     this.deps.live.broadcast({
       kind: 'proactive',
       cup_id: cupId,
@@ -231,8 +236,8 @@ export class ProactiveScheduler {
 }
 
 /** 今天从 0 点到现在的事件数(供外部调试/测试) */
-export function eventCountToday(store: Store, cupId: string, nowMs: number): number {
+export async function eventCountToday(store: Store, cupId: string, nowMs: number): Promise<number> {
   const date = dayKey(nowMs);
   const dayEnd = dayStart(date) + 86_400_000;
-  return store.events(cupId, dayStart(date), dayEnd).length;
+  return (await store.events(cupId, dayStart(date), dayEnd)).length;
 }

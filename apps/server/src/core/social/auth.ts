@@ -46,7 +46,7 @@ export interface AuthDeps {
  * 注册。校验邮箱形状 / 口令长度 / 重名 → 建账号 + 发会话。
  * 返回 token 与出口视图(salt/hash 不出)。
  */
-export function register(deps: AuthDeps, input: RegisterInput): AuthResult {
+export async function register(deps: AuthDeps, input: RegisterInput): Promise<AuthResult> {
   const email = normalizeEmail(input.email ?? '');
   const password = input.password ?? '';
   const nickname = (input.nickname ?? '').trim();
@@ -57,7 +57,7 @@ export function register(deps: AuthDeps, input: RegisterInput): AuthResult {
   }
   if (password.length > MAX_PASSWORD_LEN) return { ok: false, status: 400, error: '口令过长' };
   if (nickname.length > MAX_NICKNAME_LEN) return { ok: false, status: 400, error: '昵称过长' };
-  if (deps.store.accountByEmail(email)) {
+  if (await deps.store.accountByEmail(email)) {
     return { ok: false, status: 409, error: '该邮箱已注册' };
   }
 
@@ -73,17 +73,17 @@ export function register(deps: AuthDeps, input: RegisterInput): AuthResult {
     role: adminEmail && email === adminEmail ? 'admin' : 'user',
     created_at: now,
   };
-  deps.store.createAccount(account);
-  const token = issueSession(deps, account.user_id, now);
+  await deps.store.createAccount(account);
+  const token = await issueSession(deps, account.user_id, now);
   return { ok: true, token, user: toPublicUser(account) };
 }
 
 /** 登录。邮箱不存在 / 口令错 / 账号被禁用 → 401(不区分,免得探测哪个邮箱存在)。 */
-export function login(
+export async function login(
   deps: AuthDeps,
   input: { email: string; password: string },
-): AuthResult {
-  const account = deps.store.accountByEmail(normalizeEmail(input.email ?? ''));
+): Promise<AuthResult> {
+  const account = await deps.store.accountByEmail(normalizeEmail(input.email ?? ''));
   // 账号不存在时也跑一次哈希,尽量抹平"存在/不存在"的时间差
   const stored = account
     ? { salt: account.salt, hash: account.hash }
@@ -93,13 +93,13 @@ export function login(
   if (account.disabled) return { ok: false, status: 401, error: '账号已被禁用' };
 
   const now = deps.now?.() ?? Date.now();
-  const token = issueSession(deps, account.user_id, now);
+  const token = await issueSession(deps, account.user_id, now);
   return { ok: true, token, user: toPublicUser(account) };
 }
 
 /** 登出:删会话(不存在也算成功,幂等) */
-export function logout(deps: AuthDeps, token: string | null): void {
-  if (token) deps.store.dropSession(token);
+export async function logout(deps: AuthDeps, token: string | null): Promise<void> {
+  if (token) await deps.store.dropSession(token);
 }
 
 /**
@@ -107,16 +107,19 @@ export function logout(deps: AuthDeps, token: string | null): void {
  * 令牌缺失 / 未知 / 过期 / 账号被禁用 → null。
  * 过期会话顺手清掉(免得文件里堆死会话)。
  */
-export function resolveSession(deps: AuthDeps, token: string | null): PublicUser | null {
+export async function resolveSession(
+  deps: AuthDeps,
+  token: string | null,
+): Promise<PublicUser | null> {
   if (!token) return null;
-  const s = deps.store.session(token);
+  const s = await deps.store.session(token);
   if (!s) return null;
   const now = deps.now?.() ?? Date.now();
   if (s.expires_at <= now) {
-    deps.store.dropSession(token);
+    await deps.store.dropSession(token);
     return null;
   }
-  const account = deps.store.accountById(s.user_id);
+  const account = await deps.store.accountById(s.user_id);
   if (!account || account.disabled) return null;
   return toPublicUser(account);
 }
@@ -129,9 +132,9 @@ export function bearerToken(header: string | string[] | undefined): string | nul
   return m ? m[1]!.trim() : null;
 }
 
-function issueSession(deps: AuthDeps, userId: string, now: number): string {
+async function issueSession(deps: AuthDeps, userId: string, now: number): Promise<string> {
   const token = newSessionToken();
-  deps.store.putSession({
+  await deps.store.putSession({
     token,
     user_id: userId,
     created_at: now,

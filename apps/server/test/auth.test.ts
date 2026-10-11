@@ -167,21 +167,21 @@ test('logout:令牌作废(幂等)', async () => {
   }
 });
 
-test('会话过期:resolveSession 认出过期并清掉', () => {
+test('会话过期:resolveSession 认出过期并清掉', async () => {
   // 走纯函数层(可注入时钟),不起 HTTP —— 过期判定不依赖网络。
   const store = new MemoryAccountsStore();
   let clock = 1_000_000;
   const deps = { store, now: () => clock };
 
-  const r = register(deps, { email: 'exp@x.com', password: 'pw123456' });
+  const r = await register(deps, { email: 'exp@x.com', password: 'pw123456' });
   assert.equal(r.ok, true, '注册应成功');
   const token = r.ok ? r.token : '';
-  assert.ok(resolveSession(deps, token), '未过期时应能解析出用户');
+  assert.ok(await resolveSession(deps, token), '未过期时应能解析出用户');
 
   // 推过 7 天 TTL → 过期
   clock += SESSION_TTL_MS + 1;
-  assert.equal(resolveSession(deps, token), null, '过期后应解析失败');
-  assert.equal(store.session(token), null, '过期会话应被顺手清掉');
+  assert.equal(await resolveSession(deps, token), null, '过期后应解析失败');
+  assert.equal(await store.session(token), null, '过期会话应被顺手清掉');
 });
 
 // ── 管理员引导 ────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ test('禁用用户:已有会话与再登录都失效', async () => {
     const h = { authorization: `Bearer ${j.token}` };
     assert.equal((await fetch(`${base}/auth/me`, { headers: h })).status, 200, '禁用前可用');
 
-    app.accounts.setDisabled(j.user.user_id, true);
+    await app.accounts.setDisabled(j.user.user_id, true);
 
     assert.equal((await fetch(`${base}/auth/me`, { headers: h })).status, 401, '禁用后旧会话失效');
     assert.equal((await login(base, { email: 'ban@x.com', password: 'pw123456' })).status, 401, '禁用后不能再登录');
@@ -249,7 +249,7 @@ test('持久化:被禁用的状态也落盘', async () => {
   try {
     const s1 = new FileAccountsStore(dir);
     const { salt, hash } = hashPassword('pw123456');
-    s1.createAccount({
+    await s1.createAccount({
       user_id: 'u_x',
       email: 'd@x.com',
       nickname: 'd',
@@ -258,12 +258,12 @@ test('持久化:被禁用的状态也落盘', async () => {
       role: 'user',
       created_at: 1,
     });
-    s1.setDisabled('u_x', true);
+    await s1.setDisabled('u_x', true);
     await s1.flush();
 
     const s2 = new FileAccountsStore(dir);
-    assert.equal(s2.accountById('u_x')?.disabled, true, '禁用状态应随文件恢复');
-    assert.equal(s2.accountByEmail('D@X.COM')?.user_id, 'u_x', '邮箱归一化后仍能命中');
+    assert.equal((await s2.accountById('u_x'))?.disabled, true, '禁用状态应随文件恢复');
+    assert.equal((await s2.accountByEmail('D@X.COM'))?.user_id, 'u_x', '邮箱归一化后仍能命中');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

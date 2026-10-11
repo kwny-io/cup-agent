@@ -79,7 +79,7 @@ test('默认:未设 key → 生成随机 key(默认拒绝,不是放行)', async 
     assert.equal((await putGoal(base)).status, 401);
     // 带上生成的 key → 放行(证明生成的就是生效的)
     assert.equal((await putGoal(base, { 'x-api-key': app.apiKey! })).status, 200);
-    assert.equal(app.store.goal(CUP), 1500, '对 key 的写应真落地');
+    assert.equal(await app.store.goal(CUP), 1500, '对 key 的写应真落地');
   } finally {
     await app.close();
   }
@@ -102,7 +102,7 @@ test('默认:对 key → 正常码(200 / 202 / 200)', async () => {
   try {
     const h = { 'x-api-key': KEY };
     assert.equal((await putGoal(base, h)).status, 200);
-    assert.equal(app.store.goal(CUP), 1500, '对 key 的写应真落地');
+    assert.equal(await app.store.goal(CUP), 1500, '对 key 的写应真落地');
 
     assert.equal((await postConfig(base, h)).status, 202);
     assert.equal(app.commands.allCommands().length, 1, '对 key 的写应真入队');

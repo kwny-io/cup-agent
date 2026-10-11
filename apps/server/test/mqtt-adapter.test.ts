@@ -162,12 +162,12 @@ test('坏 JSON → 拒收 + noteRejected + 日志', () => {
   assert.ok(logs.some((l) => l.includes('拒收')));
 });
 
-test('契约越界字段 → 拒收,不进库', () => {
+test('契约越界字段 → 拒收,不进库', async () => {
   const { store, pipeline, handle, transport } = setup();
   transport.deliver(`dev/${BASE}/up`, JSON.stringify(baseFrame(BASE, { temp_c: 999 })));
   assert.equal(handle.rejected(), 1);
   assert.equal(pipeline.stats().rejected, 1);
-  assert.equal(store.latestSample(CUP_ID), null);
+  assert.equal(await store.latestSample(CUP_ID), null);
 });
 
 test('{kind:hello} 静默放行,不计接受也不计拒收', () => {
@@ -177,28 +177,31 @@ test('{kind:hello} 静默放行,不计接受也不计拒收', () => {
   assert.equal(handle.rejected(), 0);
 });
 
-test('合法帧 → 接受 + 进库(485g → 200ml)', () => {
+test('合法帧 → 接受 + 进库(485g → 200ml)', async () => {
   const { store, handle, transport } = setup();
   transport.deliver(`dev/${BASE}/up`, JSON.stringify(baseFrame()));
+  await flush(); // 适配器不 await ingest(尾挂 .then)→ 等一拍再断言计数器与落库
   assert.equal(handle.accepted(), 1);
-  assert.equal(store.latestSample(CUP_ID)?.volume_ml, 200);
+  assert.equal((await store.latestSample(CUP_ID))?.volume_ml, 200);
 });
 
-test('去重不计 accepted(同一帧投两次 → accepted 仍 1)', () => {
+test('去重不计 accepted(同一帧投两次 → accepted 仍 1)', async () => {
   const { handle, transport } = setup();
   const line = JSON.stringify(baseFrame());
   transport.deliver(`dev/${BASE}/up`, line);
   transport.deliver(`dev/${BASE}/up`, line);
+  await flush(); // accepted 计数在尾挂的 ingest.then 里 +1,等一拍再断言
   assert.equal(handle.accepted(), 1);
   assert.equal(handle.rejected(), 0);
 });
 
-test('一次发布多行(\\n 批):base + event 都进', () => {
+test('一次发布多行(\\n 批):base + event 都进', async () => {
   const { handle, transport } = setup();
   transport.deliver(
     `dev/${BASE}/up`,
     [JSON.stringify(baseFrame()), JSON.stringify(drinkEvent())].join('\n'),
   );
+  await flush();
   assert.equal(handle.accepted(), 2);
 });
 
@@ -311,8 +314,9 @@ test('createApp 注入 stub transport → 适配器→管线→Store 全通;clos
   assert.ok(app.mqtt, '应挂上 mqtt 适配器');
 
   transport.deliver(`dev/${BASE}/up`, JSON.stringify(baseFrame()));
+  await flush(); // 同上:入站 ingest 是尾挂的,等一拍
   assert.equal(app.mqtt!.accepted(), 1);
-  assert.equal(app.store.latestSample(CUP_ID)?.volume_ml, 200);
+  assert.equal((await app.store.latestSample(CUP_ID))?.volume_ml, 200);
 
   app.commands.enqueue(cmd());
   transport.deliver(`dev/${BASE}/up`, JSON.stringify(baseFrame(BASE, { seq: 2 })));

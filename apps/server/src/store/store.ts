@@ -11,30 +11,39 @@ import type { CupEvent } from '@cup/contract';
 import type { DailyAgg, FusedSample, TelemetryPoint } from '../core/types.ts';
 import { dayKey, dayStart, shiftDay } from '../core/day-boundary.ts';
 
+/**
+ * 存储接口 —— **全部方法返回 Promise**。
+ *
+ * 为什么全 async(而非"内存工作集 + 异步写回"):十万用户单进程放不下工作集;
+ * 写回层会把"`applyEventToAgg` 还没落就有人读 streak"这类顺序 bug 藏到最深处。
+ * 全 async 是一次性、机械的改动,且 HTTP 层本就是 async。
+ * `MemoryStore` 是最新的默认实现(内存无真 I/O,`async` 只是包一层),零基建照跑;
+ * 将来 `PgStore` 只换实现,不动上层(T3)。**写后读的两步必须串行**(见 pipeline.ts)。
+ */
 export interface Store {
   // ── 时序:遥测点 ──
-  appendTelemetry(p: TelemetryPoint): void;
-  telemetry(cupId: string, fromMs: number, toMs: number): TelemetryPoint[];
+  appendTelemetry(p: TelemetryPoint): Promise<void>;
+  telemetry(cupId: string, fromMs: number, toMs: number): Promise<TelemetryPoint[]>;
 
   // ── 关系:事件 ──
-  appendEvent(e: CupEvent): void;
-  events(cupId: string, fromMs: number, toMs: number): CupEvent[];
+  appendEvent(e: CupEvent): Promise<void>;
+  events(cupId: string, fromMs: number, toMs: number): Promise<CupEvent[]>;
 
   // ── 汇总:日聚合 ──
   /** 把一条事件累加进它所属那天的聚合,返回刷新后的聚合 */
-  applyEventToAgg(e: CupEvent): DailyAgg;
+  applyEventToAgg(e: CupEvent): Promise<DailyAgg>;
   /** 用融合样本刷新那天的"最后水量 / 水温区间"(遥测驱动,非事件) */
-  applySampleToAgg(s: FusedSample): void;
+  applySampleToAgg(s: FusedSample): Promise<void>;
 
-  agg(cupId: string, date: string): DailyAgg | null;
+  agg(cupId: string, date: string): Promise<DailyAgg | null>;
   /** 最近 n 天的聚合(旧→新),用于 streak 与战报 */
-  recentAggs(cupId: string, date: string, days: number): DailyAgg[];
-  setGoal(cupId: string, goalMl: number): void;
-  goal(cupId: string): number;
+  recentAggs(cupId: string, date: string, days: number): Promise<DailyAgg[]>;
+  setGoal(cupId: string, goalMl: number): Promise<void>;
+  goal(cupId: string): Promise<number>;
 
   /** 当前融合估计的快照(给 WS 首帧 / REST /state) */
-  setLatestSample(s: FusedSample): void;
-  latestSample(cupId: string): FusedSample | null;
+  setLatestSample(s: FusedSample): Promise<void>;
+  latestSample(cupId: string): Promise<FusedSample | null>;
 }
 
 // ── 日界 ─────────────────────────────────────────────────────────
@@ -88,7 +97,7 @@ export class MemoryStore implements Store {
     this.onGoal = opts.onGoal;
   }
 
-  appendTelemetry(p: TelemetryPoint): void {
+  async appendTelemetry(p: TelemetryPoint): Promise<void> {
     let arr = this.telemetryByCup.get(p.cup_id);
     if (!arr) {
       arr = [];
@@ -97,12 +106,12 @@ export class MemoryStore implements Store {
     arr.push(p);
   }
 
-  telemetry(cupId: string, fromMs: number, toMs: number): TelemetryPoint[] {
+  async telemetry(cupId: string, fromMs: number, toMs: number): Promise<TelemetryPoint[]> {
     const arr = this.telemetryByCup.get(cupId) ?? [];
     return arr.filter((p) => p.ts >= fromMs && p.ts <= toMs);
   }
 
-  appendEvent(e: CupEvent): void {
+  async appendEvent(e: CupEvent): Promise<void> {
     let arr = this.eventsByCup.get(e.cup_id);
     if (!arr) {
       arr = [];
@@ -113,32 +122,32 @@ export class MemoryStore implements Store {
     arr.sort((a, b) => a.ts - b.ts);
   }
 
-  events(cupId: string, fromMs: number, toMs: number): CupEvent[] {
+  async events(cupId: string, fromMs: number, toMs: number): Promise<CupEvent[]> {
     const arr = this.eventsByCup.get(cupId) ?? [];
     return arr.filter((e) => e.ts >= fromMs && e.ts <= toMs);
   }
 
-  goal(cupId: string): number {
+  async goal(cupId: string): Promise<number> {
     return this.goals.get(cupId) ?? DEFAULT_GOAL_ML;
   }
 
-  setGoal(cupId: string, goalMl: number): void {
+  async setGoal(cupId: string, goalMl: number): Promise<void> {
     this.goals.set(cupId, goalMl);
     this.onGoal?.(cupId, goalMl);
   }
 
-  private getAgg(cupId: string, date: string): DailyAgg {
+  private async getAgg(cupId: string, date: string): Promise<DailyAgg> {
     const key = `${cupId}|${date}`;
     let a = this.aggs.get(key);
     if (!a) {
-      a = emptyAgg(cupId, date, this.goal(cupId));
+      a = emptyAgg(cupId, date, await this.goal(cupId));
       this.aggs.set(key, a);
     }
     return a;
   }
 
-  applyEventToAgg(e: CupEvent): DailyAgg {
-    const a = this.getAgg(e.cup_id, dayKey(e.ts));
+  async applyEventToAgg(e: CupEvent): Promise<DailyAgg> {
+    const a = await this.getAgg(e.cup_id, dayKey(e.ts));
     a.event_count += 1;
     if (e.type === 'drink') {
       a.drank_ml += e.amount_ml ?? 0;
@@ -151,9 +160,9 @@ export class MemoryStore implements Store {
     return a;
   }
 
-  applySampleToAgg(s: FusedSample): void {
+  async applySampleToAgg(s: FusedSample): Promise<void> {
     const date = dayKey(s.ts);
-    const a = this.getAgg(s.cup_id, date);
+    const a = await this.getAgg(s.cup_id, date);
     a.last_volume_ml = s.volume_ml;
     if (s.temp_c !== null && Number.isFinite(s.temp_c)) {
       a.temp_min_c = a.temp_min_c === null ? s.temp_c : Math.min(a.temp_min_c, s.temp_c);
@@ -168,24 +177,25 @@ export class MemoryStore implements Store {
     a.updated_at = Date.now();
   }
 
-  agg(cupId: string, date: string): DailyAgg | null {
+  async agg(cupId: string, date: string): Promise<DailyAgg | null> {
     return this.aggs.get(`${cupId}|${date}`) ?? null;
   }
 
-  recentAggs(cupId: string, date: string, days: number): DailyAgg[] {
+  async recentAggs(cupId: string, date: string, days: number): Promise<DailyAgg[]> {
+    const goal = await this.goal(cupId);
     const out: DailyAgg[] = [];
     for (let i = days - 1; i >= 0; i--) {
       const d = shiftDay(date, -i);
-      out.push(this.aggs.get(`${cupId}|${d}`) ?? emptyAgg(cupId, d, this.goal(cupId)));
+      out.push(this.aggs.get(`${cupId}|${d}`) ?? emptyAgg(cupId, d, goal));
     }
     return out;
   }
 
-  setLatestSample(s: FusedSample): void {
+  async setLatestSample(s: FusedSample): Promise<void> {
     this.latest.set(s.cup_id, s);
   }
 
-  latestSample(cupId: string): FusedSample | null {
+  async latestSample(cupId: string): Promise<FusedSample | null> {
     return this.latest.get(cupId) ?? null;
   }
 

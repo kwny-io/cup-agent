@@ -39,7 +39,7 @@ export interface ToolDef {
   isWrite: boolean;
   /** 校验不可信参数 → 合法值时返回解析后的值,否则 null */
   parse(input: unknown): unknown | null;
-  run(ctx: ToolCtx, cupId: string, input: unknown): ToolResult;
+  run(ctx: ToolCtx, cupId: string, input: unknown): Promise<ToolResult>;
 }
 
 // ── 只读:get_today ──────────────────────────────────────────────
@@ -58,10 +58,10 @@ const getToday: ToolDef = {
     const r = GetTodayArgs.safeParse(input ?? {});
     return r.success ? r.data : null;
   },
-  run(ctx, cupId) {
+  async run(ctx, cupId) {
     const date = dayKey(ctx.now());
-    const agg = ctx.store.agg(cupId, date);
-    const goal = agg?.goal_ml ?? ctx.store.goal(cupId);
+    const agg = await ctx.store.agg(cupId, date);
+    const goal = agg?.goal_ml ?? (await ctx.store.goal(cupId));
     const drank = agg?.drank_ml ?? 0;
     const remaining = Math.max(0, goal - drank);
     const progress = goal > 0 ? Math.min(100, Math.round((drank / goal) * 100)) : 0;
@@ -112,10 +112,10 @@ const getHistory: ToolDef = {
     const r = GetHistoryArgs.safeParse(filled);
     return r.success ? r.data : null;
   },
-  run(ctx, cupId, input) {
+  async run(ctx, cupId, input) {
     const { days } = input as { days: number };
     const today = dayKey(ctx.now());
-    const rows = ctx.store.recentAggs(cupId, today, days).map((a) => ({
+    const rows = (await ctx.store.recentAggs(cupId, today, days)).map((a) => ({
       date: a.date,
       drank_ml: a.drank_ml,
       goal_ml: a.goal_ml,
@@ -148,20 +148,22 @@ const getSelf: ToolDef = {
     const r = GetSelfArgs.safeParse(input ?? {});
     return r.success ? r.data : null;
   },
-  run(ctx, cupId) {
+  async run(ctx, cupId) {
     const now = ctx.now();
     // 杯盖遥测(带电量 / 水温 / 姿态);最新的那条
-    const lidPts = ctx.store.telemetry(cupId, 0, now).filter((p) => p.kind === 'lid' && p.lid);
+    const lidPts = (await ctx.store.telemetry(cupId, 0, now)).filter(
+      (p) => p.kind === 'lid' && p.lid,
+    );
     const lid = lidPts.length > 0 ? lidPts[lidPts.length - 1]!.lid : undefined;
 
-    const sample = ctx.store.latestSample(cupId);
+    const sample = await ctx.store.latestSample(cupId);
 
     // "最近一次被感知到" = 最近一条遥测融合样本(不是事件 —— 没事件但有遥测=没被忘)
     const lastSeenTs = sample ? sample.ts : null;
     const last_seen_ms = lastSeenTs === null ? null : Math.max(0, now - lastSeenTs);
 
     // 最近一次事件(给"为什么闹脾气"提供上下文)
-    const evs = ctx.store.events(cupId, 0, now);
+    const evs = await ctx.store.events(cupId, 0, now);
     const lastEventType = evs.length > 0 ? evs[evs.length - 1]!.type : null;
 
     const tempC = sample?.temp_c ?? lid?.temp_c ?? null;
@@ -170,7 +172,7 @@ const getSelf: ToolDef = {
 
     // 今天发生过的"身体事件"次数(被摔/烫/没电)
     const dayFrom = dayStart(dayKey(now));
-    const todays = ctx.store.events(cupId, dayFrom, now + 1);
+    const todays = await ctx.store.events(cupId, dayFrom, now + 1);
     const count = (t: string) => todays.filter((e) => e.type === t).length;
 
     return {
@@ -218,10 +220,10 @@ const setGoal: ToolDef = {
     const r = SetGoalArgs.safeParse(input);
     return r.success ? r.data : null;
   },
-  run(ctx, cupId, input) {
+  async run(ctx, cupId, input) {
     const { goal_ml } = input as { goal_ml: number };
-    const previous = ctx.store.goal(cupId);
-    ctx.store.setGoal(cupId, goal_ml);
+    const previous = await ctx.store.goal(cupId);
+    await ctx.store.setGoal(cupId, goal_ml);
     return { ok: true, output: { goal_ml, previous_goal_ml: previous } };
   },
 };
@@ -273,7 +275,7 @@ const pushDevice: ToolDef = {
     const r = PushDeviceArgs.safeParse(input);
     return r.success ? r.data : null;
   },
-  run(ctx, cupId, input) {
+  async run(ctx, cupId, input) {
     const { kind, text, led } = input as { kind: 'remind'; text: string; led?: string };
     const now = ctx.now();
     // target / cmd_id / ts / expires_at / type 全部服务端填 —— 不接受模型指定。

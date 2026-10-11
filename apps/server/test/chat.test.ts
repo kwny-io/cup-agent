@@ -134,26 +134,26 @@ test('守卫:LLM 抛错 → 确定性回退,带真实数字', async () => {
 
 // ── 工具参数收口 ─────────────────────────────────────────────────
 
-test('工具:未知工具名 → {ok:false},不抛', () => {
+test('工具:未知工具名 → {ok:false},不抛', async () => {
   const store = new MemoryStore();
   const commands = new CommandQueue();
-  const r = dispatch(ctx(store, commands), CUP, 'delete_everything', {}, false);
+  const r = await dispatch(ctx(store, commands), CUP, 'delete_everything', {}, false);
   assert.equal(r.ok, false);
   assert.match(r.error ?? '', /未知工具/);
 });
 
-test('工具:set_goal 越界(99999)→ {ok:false},store 未改,队列为空', () => {
+test('工具:set_goal 越界(99999)→ {ok:false},store 未改,队列为空', async () => {
   const store = new MemoryStore();
   const commands = new CommandQueue();
-  const r = dispatch(ctx(store, commands), CUP, 'set_goal', { goal_ml: 99999 }, false);
+  const r = await dispatch(ctx(store, commands), CUP, 'set_goal', { goal_ml: 99999 }, false);
   assert.equal(r.ok, false);
-  assert.equal(store.goal(CUP), 1500); // 默认值没被改
+  assert.equal(await store.goal(CUP), 1500); // 默认值没被改
 });
 
-test('工具:push_device 忽略模型夹带的 target/cmd_id(zod 剥掉未知键)', () => {
+test('工具:push_device 忽略模型夹带的 target/cmd_id(zod 剥掉未知键)', async () => {
   const store = new MemoryStore();
   const commands = new CommandQueue();
-  const r = dispatch(
+  const r = await dispatch(
     ctx(store, commands),
     CUP,
     'push_device',
@@ -175,7 +175,7 @@ test('写:合法 set_goal → 目标真的改了', async () => {
 
   const a = await runChat(deps, { cupId: CUP, question: '把目标改成 2000' });
   assert.ok(a.tools_used.includes('set_goal'));
-  assert.equal(store.goal(CUP), 2000);
+  assert.equal(await store.goal(CUP), 2000);
 });
 
 test('写:合法 push_device → 恰好一条 Command,target/cmd_id 是服务端值', async () => {
@@ -189,19 +189,19 @@ test('写:合法 push_device → 恰好一条 Command,target/cmd_id 是服务端
   assert.equal(q[0]!.type, 'remind');
 });
 
-test('push_device:省略 led → 服务端兜默认 breath_blue(契约 §5 payload 含 led)', () => {
+test('push_device:省略 led → 服务端兜默认 breath_blue(契约 §5 payload 含 led)', async () => {
   const store = new MemoryStore();
   const commands = new CommandQueue();
-  const r = dispatch(ctx(store, commands), CUP, 'push_device', { kind: 'remind', text: '喝水' }, false);
+  const r = await dispatch(ctx(store, commands), CUP, 'push_device', { kind: 'remind', text: '喝水' }, false);
   assert.equal(r.ok, true);
   const q = commands.peek(DEFAULT_DEVICE_TARGET);
   assert.equal((q[0]!.payload as { led?: string }).led, 'breath_blue');
 });
 
-test('push_device:模型给的白名单 led 原样下发(固件认得的名字)', () => {
+test('push_device:模型给的白名单 led 原样下发(固件认得的名字)', async () => {
   const store = new MemoryStore();
   const commands = new CommandQueue();
-  const r = dispatch(
+  const r = await dispatch(
     ctx(store, commands),
     CUP,
     'push_device',
@@ -212,10 +212,10 @@ test('push_device:模型给的白名单 led 原样下发(固件认得的名字)'
   assert.equal((commands.peek(DEFAULT_DEVICE_TARGET)[0]!.payload as { led?: string }).led, 'blink_red');
 });
 
-test('push_device:白名单外的 led 名 → 拒,不入队(不许模型瞎编灯效)', () => {
+test('push_device:白名单外的 led 名 → 拒,不入队(不许模型瞎编灯效)', async () => {
   const store = new MemoryStore();
   const commands = new CommandQueue();
-  const r = dispatch(
+  const r = await dispatch(
     ctx(store, commands),
     CUP,
     'push_device',
@@ -234,7 +234,7 @@ test('写预算:一次对话里第二次写被拒,只落一条草', async () => 
   ]);
 
   await runChat(deps, { cupId: CUP, question: '改目标并提醒我' });
-  assert.equal(store.goal(CUP), 2000);
+  assert.equal(await store.goal(CUP), 2000);
   assert.equal(commands.peek(DEFAULT_DEVICE_TARGET).length, 0); // 第二次写没落
 });
 
@@ -245,7 +245,7 @@ test('记忆:一轮问答后,历史里有一条 user + 一条 assistant', async 
   store.applyEventToAgg(drink(NOW, 300));
 
   await runChat(deps, { cupId: CUP, question: '多少了' });
-  const turns = memory.recentTurns(CUP, 10);
+  const turns = await memory.recentTurns(CUP, 10);
   assert.equal(turns.length, 2);
   assert.equal(turns[0]!.role, 'user');
   assert.equal(turns[1]!.role, 'assistant');

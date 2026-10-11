@@ -24,29 +24,29 @@ export class FileChatStore implements ChatStore {
     this.turns = file.turns(); // 已从磁盘读回并挂在 state 上,这里持有同一个引用
   }
 
-  appendTurn(t: ChatTurnRecord): void {
+  async appendTurn(t: ChatTurnRecord): Promise<void> {
     const next = capTurns(this.turns[t.cup_id] ?? [], t);
     this.turns[t.cup_id] = next;
     this.file.setTurns(t.cup_id, next); // 触发去抖落盘
   }
 
-  recentTurns(cupId: string, limit: number): ChatTurnRecord[] {
+  async recentTurns(cupId: string, limit: number): Promise<ChatTurnRecord[]> {
     return windowTurns(this.turns[cupId] ?? [], limit);
   }
 
-  profile(cupId: string): string | null {
+  async profile(cupId: string): Promise<string | null> {
     return this.file.profiles()[cupId] ?? null;
   }
 
-  setProfile(cupId: string, text: string): void {
+  async setProfile(cupId: string, text: string): Promise<void> {
     this.file.setProfile(cupId, text);
   }
 
-  lastDistilledAt(cupId: string): number {
+  async lastDistilledAt(cupId: string): Promise<number> {
     return this.file.distilledAt()[cupId] ?? 0;
   }
 
-  setLastDistilledAt(cupId: string, ts: number): void {
+  async setLastDistilledAt(cupId: string, ts: number): Promise<void> {
     this.file.setDistilledAt(cupId, ts);
   }
 

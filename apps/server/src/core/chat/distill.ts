@@ -45,13 +45,13 @@ export interface DistillResult {
 }
 
 /** 攒够新轮了吗(自 sinceTs 起新增 ≥ minNewTurns 条) */
-export function distillDue(
+export async function distillDue(
   store: ChatStore,
   cupId: string,
   sinceTs: number,
   minNewTurns = DEFAULT_MIN_NEW_TURNS,
-): boolean {
-  const turns = store.recentTurns(cupId, 200);
+): Promise<boolean> {
+  const turns = await store.recentTurns(cupId, 200);
   let n = 0;
   for (const t of turns) if (t.ts > sinceTs) n++;
   return n >= minNewTurns;
@@ -71,11 +71,11 @@ export function transcript(turns: ChatTurnRecord[]): string {
  * 确定性模板画像 —— 模型不可用 / 守卫拦下时的兜底。
  * 数字**全部来自日聚合**,与 report.ts 同宗("模板 + 真实数字是主路径")。
  */
-export function templateProfile(store: Store, cupId: string, nowMs: number): string {
-  const rows = store.recentAggs(cupId, dayKey(nowMs), 7);
+export async function templateProfile(store: Store, cupId: string, nowMs: number): Promise<string> {
+  const rows = await store.recentAggs(cupId, dayKey(nowMs), 7);
   const totalDrank = rows.reduce((s, a) => s + a.drank_ml, 0);
   const daysWithData = rows.filter((a) => a.event_count > 0).length;
-  const goal = store.goal(cupId);
+  const goal = await store.goal(cupId);
   const parts: string[] = [];
   if (daysWithData > 0) parts.push(`近 7 天有 ${daysWithData} 天在喝,共约 ${totalDrank}ml`);
   parts.push(`每日目标 ${goal}ml`);
@@ -108,11 +108,11 @@ export async function distillProfile(
   const { store, memory, chat, log } = deps;
   const nowMs = req.nowMs ?? (deps.now ? deps.now() : Date.now());
 
-  const sinceTs = memory.lastDistilledAt(req.cupId);
-  if (!distillDue(memory, req.cupId, sinceTs, req.minNewTurns)) return null;
+  const sinceTs = await memory.lastDistilledAt(req.cupId);
+  if (!(await distillDue(memory, req.cupId, sinceTs, req.minNewTurns))) return null;
 
-  const turns = memory.recentTurns(req.cupId, 200);
-  const tpl = templateProfile(store, req.cupId, nowMs);
+  const turns = await memory.recentTurns(req.cupId, 200);
+  const tpl = await templateProfile(store, req.cupId, nowMs);
 
   // allow 集 = 历史轮里的数字 ∪ 日聚合事实数字(模板)—— 模型可以复述,但不得凭空
   const allowed = new Set<string>();
@@ -140,7 +140,7 @@ export async function distillProfile(
     log(`画像蒸馏:模型不可用 → 模板(${(err as Error).message})`, 'info');
   }
 
-  memory.setProfile(req.cupId, text);
-  memory.setLastDistilledAt(req.cupId, nowMs);
+  await memory.setProfile(req.cupId, text);
+  await memory.setLastDistilledAt(req.cupId, nowMs);
   return { text, source };
 }

@@ -324,15 +324,15 @@ test('持久化:绑杯子 + 加好友落盘,新实例读回', async () => {
       role: 'user' as const,
       created_at: 1,
     });
-    s1.createAccount(acc('u_a', 'a@x.com'));
-    s1.createAccount(acc('u_b', 'b@x.com'));
-    s1.setCup('u_b', CUP_B);
-    s1.addFriend('u_a', 'u_b');
+    await s1.createAccount(acc('u_a', 'a@x.com'));
+    await s1.createAccount(acc('u_b', 'b@x.com'));
+    await s1.setCup('u_b', CUP_B);
+    await s1.addFriend('u_a', 'u_b');
     await s1.flush();
 
     const s2 = new FileAccountsStore(dir);
-    assert.equal(s2.accountById('u_b')?.cup_id, CUP_B, '杯子绑定应恢复');
-    assert.deepEqual(s2.friends('u_a'), ['u_b'], '好友关系应恢复');
+    assert.equal((await s2.accountById('u_b'))?.cup_id, CUP_B, '杯子绑定应恢复');
+    assert.deepEqual(await s2.friends('u_a'), ['u_b'], '好友关系应恢复');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

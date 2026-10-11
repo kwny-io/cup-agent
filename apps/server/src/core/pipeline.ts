@@ -41,7 +41,7 @@ export class Pipeline {
    * 处理一帧(已过 §2 校验)。
    * @returns 是否被接受(false = 去重丢弃)
    */
-  ingest(frame: UpstreamFrame): boolean {
+  async ingest(frame: UpstreamFrame): Promise<boolean> {
     switch (frame.kind) {
       case 'lid':
         return this.onLid(frame.payload);
@@ -61,7 +61,7 @@ export class Pipeline {
     return f;
   }
 
-  private onLid(l: LidTelemetry): boolean {
+  private async onLid(l: LidTelemetry): Promise<boolean> {
     if (!this.deduper.accept(l)) return false;
     const p: TelemetryPoint = {
       cup_id: l.cup_id,
@@ -71,15 +71,15 @@ export class Pipeline {
       seq: l.seq,
       lid: l,
     };
-    this.store.appendTelemetry(p);
+    await this.store.appendTelemetry(p);
     this.em.telemetry?.(p);
 
     const s = this.fusion(l.cup_id).onLid(l);
-    this.commit(s);
+    await this.commit(s);
     return true;
   }
 
-  private onBase(b: BaseTelemetry): boolean {
+  private async onBase(b: BaseTelemetry): Promise<boolean> {
     if (!this.deduper.accept(b)) return false;
     const p: TelemetryPoint = {
       cup_id: b.cup_id,
@@ -89,15 +89,15 @@ export class Pipeline {
       seq: b.seq,
       base: b,
     };
-    this.store.appendTelemetry(p);
+    await this.store.appendTelemetry(p);
     this.em.telemetry?.(p);
 
     const s = this.fusion(b.cup_id).onBase(b);
-    this.commit(s);
+    await this.commit(s);
     return true;
   }
 
-  private onEvent(e: CupEvent): boolean {
+  private async onEvent(e: CupEvent): Promise<boolean> {
     // 事件无 seq,用 (device_id, ts, type) 去重
     const key = eventKey(e);
     if (this.seenEvents.has(key)) return false;
@@ -108,15 +108,17 @@ export class Pipeline {
       for (const k of drop) this.seenEvents.delete(k);
     }
 
-    this.store.appendEvent(e);
-    this.store.applyEventToAgg(e);
+    // 写后读必须**串行**:appendEvent 落定后再 applyEventToAgg。
+    // 绝不可 Promise.all —— 否则聚合可能读到"事件还没落"的状态,静默毁 streak/聚合。
+    await this.store.appendEvent(e);
+    await this.store.applyEventToAgg(e);
     this.em.event?.(e);
     return true;
   }
 
-  private commit(s: FusedSample): void {
-    this.store.setLatestSample(s);
-    this.store.applySampleToAgg(s);
+  private async commit(s: FusedSample): Promise<void> {
+    await this.store.setLatestSample(s);
+    await this.store.applySampleToAgg(s);
     this.em.sample?.(s);
   }
 
