@@ -26,8 +26,16 @@ export interface MqttTransport {
    * seam 不暴露重连细节 —— 重连归真实现所有。
    */
   subscribe(topic: string, onMessage: (msg: MqttTransportMessage) => void): void;
-  /** 发布。成功 true;失败(未连接 / 抛错)false —— **不抛**。 */
-  publish(topic: string, payload: string): boolean;
+  /**
+   * 发布(QoS1)。**等 broker 回 PUBACK**(或超时)才 resolve:
+   * 成功 true;失败(未连接 / 超时 / 抛错)false —— **不抛**。
+   *
+   * 返回 Promise 而非 boolean 是 R11 的要害:旧实现返回的是"此刻是否已连接",
+   * 报 `true` 不等于 broker 收了 —— 上层据此认为捎回成功、把指令从队列里删掉,
+   * 一旦那条 MQTT 报文在途丢了,指令就**两头都没了**。改为等 PUBACK 后,
+   * 只有真收到确认才算成功,失败才回队重试(见 mqtt-adapter.ts 的 deliver)。
+   */
+  publish(topic: string, payload: string): Promise<boolean>;
   /** 断开并释放。**同步**返回(对齐 `app.close()` 里同步的 `adapter?.stop()`)。 */
   close(): void;
 }

@@ -121,13 +121,21 @@ export function startMqttAdapter(opts: MqttAdapterOptions): MqttAdapterHandle {
     if (opts.pipeline.ingest(parsed.data)) accepted += 1;
   };
 
-  /** 捎回:把该设备排队中的指令递回去(取一次、空不发、失败回队)。 */
-  const deliver = (deviceId: string): void => {
+  /**
+   * 捎回:把该设备排队中的指令递回去(取一次、空不发、**等 PUBACK**、失败回队)。
+   *
+   * `publish` 现在返回 Promise(R11):只有 broker 真回 PUBACK 才算送达,否则回队。
+   * 是 async 的,但**调用方不 await**(见 handleMessage)—— 适配器不该为了等一次
+   * 网络往返而阻塞入站处理;回队是自愈的,顶多晚一次上行重发。
+   */
+  const deliver = async (deviceId: string): Promise<void> => {
     if (stopped) return;
     const due = opts.commands.takeFor(deviceId); // 顺带丢掉过期指令
     if (due.length === 0) return; // 空数组不发 —— 不制造无意义的 broker 噪声
     const topic = down(deviceId);
-    if (!opts.transport.publish(topic, JSON.stringify(due))) {
+    const ok = await opts.transport.publish(topic, JSON.stringify(due));
+    if (!ok) {
+      if (stopped) return; // 等待期间被 stop:别再往已关的队列里塞
       opts.commands.requeue(due);
       log(`[mqtt-adapter] 捎回失败,${due.length} 条指令回队待下次上行重试`, 'warn');
       return;
@@ -149,8 +157,11 @@ export function startMqttAdapter(opts: MqttAdapterOptions): MqttAdapterHandle {
       if (text.length === 0) continue;
       handleLine(deviceId, text);
     }
-    // 捎回在整条消息处理完**只调一次**(而不是每行一次)
-    deliver(deviceId);
+    // 捎回在整条消息处理完**只调一次**(而不是每行一次)。
+    // 不 await:等一次 PUBACK 往返不该拖住入站(回队自愈);尾挂 catch 防未捕获拒绝。
+    void deliver(deviceId).catch((err: unknown) => {
+      log(`[mqtt-adapter] 捎回异常:${err instanceof Error ? err.message : String(err)}`, 'error');
+    });
   };
 
   opts.transport.subscribe(uplink, handleMessage);

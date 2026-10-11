@@ -12,6 +12,12 @@
 import { connect } from 'mqtt';
 import type { MqttTransport, MqttTransportMessage } from './mqtt-transport.ts';
 
+/**
+ * 等 PUBACK 的上限(ms)。超过就当作没送达 → 上层回队重试(R11)。
+ * 取 5s:远超局域网 RTT,又不至于让"捎回失败"迟迟不发现而卡住指令队列。
+ */
+const PUBACK_TIMEOUT_MS = 5000;
+
 export interface NodeMqttTransportOptions {
   url: string;
   log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
@@ -53,13 +59,30 @@ export function createNodeMqttTransport(opts: NodeMqttTransportOptions): MqttTra
       });
     },
     publish(topic, payload) {
-      try {
-        // fire-and-forget:返回的是此刻是否已连接,不代表 broker 已收(见 ADR T17 的已知限制)
-        client.publish(topic, payload, { qos: 1, retain: false });
-        return client.connected;
-      } catch {
-        return false; // 未连接 / 序列化失败 → 让上层重新入队
-      }
+      // QoS1:等 broker 回 PUBACK 才算成功(R11)。mqtt.js 的 publish 回调在
+      // QoS>0 时正由 PUBACK 触发(err 为 null = broker 已确认收下)。
+      return new Promise<boolean>((resolve) => {
+        if (!client.connected) {
+          resolve(false); // 未连接,不必排进 client 的离线队列 —— 上层自己回队重试
+          return;
+        }
+        let settled = false;
+        const done = (ok: boolean): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(ok);
+        };
+        const timer = setTimeout(() => {
+          log(`[mqtt] 发布 ${topic} 超时(未收到 PUBACK)`, 'warn');
+          done(false);
+        }, PUBACK_TIMEOUT_MS);
+        try {
+          client.publish(topic, payload, { qos: 1, retain: false }, (err) => done(!err));
+        } catch {
+          done(false); // 序列化失败等同步异常
+        }
+      });
     },
     close() {
       client.end(true);

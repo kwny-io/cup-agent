@@ -18,8 +18,10 @@ import { createApp } from '@cup/server';
 const CUP = 'cup-A1B2C3';
 const KEY = 'sekret-key-123';
 
-/** 起真后端;默认不豁免(强制鉴权)。可传 apiKey / allowUnauth。 */
-async function startApp(opts: { apiKey?: string; allowUnauth?: boolean } = {}) {
+/** 起真后端;默认不豁免(强制鉴权)。可传 apiKey / allowUnauth / readAuth。 */
+async function startApp(
+  opts: { apiKey?: string; allowUnauth?: boolean; readAuth?: boolean } = {},
+) {
   const app = createApp({ log: () => {}, ...opts });
   const port = await app.listen(0);
   return { app, base: `http://127.0.0.1:${port}` };
@@ -165,6 +167,60 @@ test('401 响应体是 JSON 且 error=unauthorized', async () => {
     );
     const j = (await r.json()) as { error: string };
     assert.equal(j.error, 'unauthorized');
+  } finally {
+    await app.close();
+  }
+});
+
+// ── 读端点可选鉴权(readAuth,默认关)────────────────────────────
+
+test('readAuth:默认关 → 读端点不加头也不被鉴权挡(与旧行为一致)', async () => {
+  const { app, base } = await startApp({ apiKey: KEY }); // 不传 readAuth
+  try {
+    // today/series 无数据也 200;state 无数据是 404(数据原因,非鉴权)—— 关键是不是 401。
+    assert.equal((await fetch(`${base}/cups/${CUP}/today`)).status, 200);
+    assert.equal((await fetch(`${base}/cups/${CUP}/series`)).status, 200);
+    assert.notEqual((await fetch(`${base}/cups/${CUP}/state`)).status, 401, '/state 不该被鉴权挡');
+  } finally {
+    await app.close();
+  }
+});
+
+test('readAuth:开 → 读端点缺头 401,带头 200', async () => {
+  const { app, base } = await startApp({ apiKey: KEY, readAuth: true });
+  try {
+    // 缺头 → 401
+    assert.equal((await fetch(`${base}/cups/${CUP}/today`)).status, 401, '/today 缺头应 401');
+    assert.equal((await fetch(`${base}/cups/${CUP}/series`)).status, 401);
+    // 错头 → 401
+    assert.equal(
+      (await fetch(`${base}/cups/${CUP}/today`, { headers: { 'x-api-key': 'nope' } })).status,
+      401,
+    );
+    // 对头 → 200
+    assert.equal(
+      (await fetch(`${base}/cups/${CUP}/today`, { headers: { 'x-api-key': KEY } })).status,
+      200,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('readAuth:开 → /healthz 仍永久开放', async () => {
+  const { app, base } = await startApp({ apiKey: KEY, readAuth: true });
+  try {
+    assert.equal((await fetch(`${base}/healthz`)).status, 200, '健康检查不该要 key');
+  } finally {
+    await app.close();
+  }
+});
+
+test('readAuth:开 + allowUnauth → 读端点也放行(显式豁免优先)', async () => {
+  const { app, base } = await startApp({ readAuth: true, allowUnauth: true });
+  try {
+    assert.equal((await fetch(`${base}/cups/${CUP}/today`)).status, 200);
+    assert.equal((await fetch(`${base}/cups/${CUP}/series`)).status, 200);
   } finally {
     await app.close();
   }

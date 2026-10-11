@@ -19,6 +19,7 @@ import { FetchLlm, NullLlm, type Llm } from './core/llm.ts';
 import { FetchChatLlm } from './core/chat/anthropic.ts';
 import { NullChatLlm } from './core/chat/mock.ts';
 import type { ChatLlm } from './core/chat/types.ts';
+import { setDayTimeZone, getDayTimeZone } from './core/day-boundary.ts';
 
 interface Args {
   port: number;
@@ -29,8 +30,12 @@ interface Args {
   cups: string[];
   /** --allow-unauth:显式豁免写端点鉴权(仅本地开发) */
   allowUnauth: boolean;
+  /** --read-auth:读端点也要 x-api-key(可选层,默认读开放) */
+  readAuth: boolean;
   /** 画像蒸馏阈值(自上次蒸馏后新增多少轮才再蒸);null = 用 distill.ts 默认值 */
   profileMinTurns: number | null;
+  /** 日界时区(IANA,如 Asia/Shanghai);null = 服务器本地时区 */
+  tz: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -42,7 +47,9 @@ function parseArgs(argv: string[]): Args {
     proactive: false,
     cups: [],
     allowUnauth: false,
+    readAuth: false,
     profileMinTurns: null,
+    tz: process.env.CUP_TZ ?? null,
   };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -73,15 +80,22 @@ function parseArgs(argv: string[]): Args {
       case '--allow-unauth':
         a.allowUnauth = true;
         break;
+      case '--read-auth':
+        a.readAuth = true;
+        break;
       case '--profile-min-turns': {
         const n = Number(v);
         if (Number.isFinite(n) && n > 0) a.profileMinTurns = Math.floor(n);
         i++;
         break;
       }
+      case '--tz':
+        a.tz = v ?? null;
+        i++;
+        break;
       case '--help':
         console.log(
-          'node apps/server/src/cli.ts [--port 8788] [--sim ws://localhost:8787] [--mqtt mqtt://localhost:1883] [--quiet] [--proactive --cup cup-A1B2C3] [--profile-min-turns 8] [--allow-unauth]',
+          'node apps/server/src/cli.ts [--port 8788] [--sim ws://localhost:8787] [--mqtt mqtt://localhost:1883] [--quiet] [--proactive --cup cup-A1B2C3] [--profile-min-turns 8] [--allow-unauth] [--tz Asia/Shanghai]',
         );
         console.log('');
         console.log('LLM(可选,用于战报语气润色;不配则恒用模板):');
@@ -102,6 +116,20 @@ function parseArgs(argv: string[]): Args {
         console.log('  PUT /goal、POST /config、POST /ask 须带 x-api-key。');
         console.log('  CUP_API_KEY=<key>      指定 key;不设则启动时随机生成并打到启动横幅。');
         console.log('  --allow-unauth         显式豁免(仅本地开发);生产勿用。');
+        console.log('  --read-auth            读端点也要 x-api-key(默认读开放);完整读鉴权需账号体系。');
+        console.log('');
+        console.log('账号 / 会话(多用户地基;POST /auth/register|login|logout,GET /auth/me):');
+        console.log('  CUP_ADMIN_EMAIL=<邮箱>  该邮箱注册即得管理员(市场审核后台);不设则无管理员。');
+        console.log('');
+        console.log('人格档案 / 市场 / 社交(需登录会话:Authorization: Bearer <token>):');
+        console.log('  GET|PUT /cups/:id/profile       人格档案(昵称 + 派生性格快照;#72)');
+        console.log('  GET|POST /market/packs          浏览已上架 / 投稿人格包(#73)');
+        console.log('  POST /market/packs/:id/subscribe 订阅已上架包');
+        console.log('  GET /admin/users · POST /admin/users/:id/disable · GET /admin/packs?status= ·');
+        console.log('    POST /admin/packs/:id/(approve|reject)  管理后台(须 role=admin)');
+        console.log('  GET|POST /social/friends        好友列表 / 按邮箱加好友(#74)');
+        console.log('  POST|DELETE /social/cup         绑定 / 解绑我的杯子(好友互见的口子)');
+        console.log('  GET /social/team                组队 streak(共同连续达标天数)');
         console.log('');
         console.log('画像蒸馏(把攒下的对话轮归纳成长期画像;随 --proactive 巡检触发):');
         console.log('  --profile-min-turns <n>  自上次蒸馏后新增多少轮才再蒸一次(默认 8)。');
@@ -136,6 +164,16 @@ async function main(): Promise<void> {
     ? () => {}
     : (m: string, l: 'info' | 'warn' | 'error' = 'info') => console[l](m);
 
+  // 日界时区:启动时设一次(非法名早失败,别等运行到半夜才炸)
+  if (args.tz !== null) {
+    try {
+      setDayTimeZone(args.tz);
+    } catch {
+      console.error(`[fatal] 非法时区 --tz/CUP_TZ: ${args.tz}(${args.tz ? '应为 IANA 名,如 Asia/Shanghai' : ''})`);
+      process.exit(2);
+    }
+  }
+
   const llm = makeLlm();
   const chatLlm = makeChatLlm();
   const dataDir = process.env.CUP_DATA_DIR ?? './.data';
@@ -153,6 +191,8 @@ async function main(): Promise<void> {
     profileMinNewTurns: args.profileMinTurns ?? undefined,
     apiKey,
     allowUnauth: args.allowUnauth,
+    readAuth: args.readAuth,
+    adminEmail: process.env.CUP_ADMIN_EMAIL,
   });
   const port = await app.listen(args.port);
 
@@ -173,13 +213,15 @@ async function main(): Promise<void> {
     `  对话模型: ${chatLlm.name === 'null' ? '未配置 → 恒回退确定性模板句' : chatLlm.name}`,
   );
   console.log(`  数据目录: ${dataDir}(目标 + 对话记忆持久化)`);
+  console.log(`  日界时区: ${getDayTimeZone() ?? '(服务器本地时区;--tz/CUP_TZ 可设,如 Asia/Shanghai)'}`);
+  const readScope = args.readAuth ? '读+写' : '仅写';
   if (args.allowUnauth) {
-    console.log('  写端点鉴权: 关(--allow-unauth 显式豁免,仅本地开发;生产勿用)');
+    console.log('  端点鉴权: 关(--allow-unauth 显式豁免,仅本地开发;生产勿用)');
   } else if (app.apiKeyGenerated) {
     // 随机生成的 key 只在此处回显一次(供本地 curl 用);不落盘、不入日志文件。
-    console.log(`  写端点鉴权: 开(随机 key,写端点须带 x-api-key: ${app.apiKey})`);
+    console.log(`  端点鉴权: 开(${readScope};随机 key,须带 x-api-key: ${app.apiKey})`);
   } else {
-    console.log('  写端点鉴权: 开(用 CUP_API_KEY,写端点须带 x-api-key)');
+    console.log(`  端点鉴权: 开(${readScope};用 CUP_API_KEY,须带 x-api-key)`);
   }
   console.log(
     `  主动开口: ${args.proactive ? `开(照看 ${args.cups.join(', ') || '无 —— 加 --cup <id>'})` : '关(--proactive 开启)'}`,

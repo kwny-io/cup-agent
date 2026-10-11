@@ -6,7 +6,17 @@ export { Pipeline, type PipelineEvents } from './core/pipeline.ts';
 export { CupFusion } from './core/fusion.ts';
 export { Deduper, eventKey, type SeqKeyed } from './core/dedupe.ts';
 export { CommandQueue, DEFAULT_DEVICE_TARGET } from './core/commands.ts';
-export { computePersonality, type Disposition, type Personality } from './core/personality.ts';
+export {
+  computePersonality,
+  warmthScore,
+  refillHabit,
+  warmthRemark,
+  traitRecord,
+  LOOKBACK_DAYS,
+  type Disposition,
+  type Personality,
+  type TraitRecord,
+} from './core/personality.ts';
 export {
   generateReport,
   templateHeadline,
@@ -28,6 +38,7 @@ export {
   type MemoryStoreOptions,
   type Store,
 } from './store/store.ts';
+export { setDayTimeZone, getDayTimeZone } from './core/day-boundary.ts';
 export {
   runChat,
   dispatch,
@@ -58,7 +69,55 @@ export {
   type DistillRequest,
   type DistillResult,
 } from './core/chat/distill.ts';
-export { FilePersistence, type PersistState } from './core/persist.ts';
+export { FilePersistence, type PersistState, type ProfileRecord, atomicWriteJson } from './core/persist.ts';
+export { JsonFile } from './core/persist-file.ts';
+export {
+  MemoryProfileStore,
+  FileProfileStore,
+  type ProfileStore,
+} from './core/traits.ts';
+export { MemoryAccountsStore, FileAccountsStore } from './core/social/accounts.ts';
+export {
+  register,
+  login,
+  logout,
+  resolveSession,
+  bearerToken,
+  MIN_PASSWORD_LEN,
+  type AuthDeps,
+  type AuthResult,
+  type RegisterInput,
+} from './core/social/auth.ts';
+export {
+  hashPassword,
+  verifyPassword,
+  newSessionToken,
+  SESSION_TTL_MS,
+  type PasswordHash,
+} from './core/social/crypto.ts';
+export {
+  normalizePack,
+  makePack,
+  PACK_THRESHOLD_KEYS,
+  PACK_WAVE_KEYS,
+  type PackDraft,
+} from './core/social/packs.ts';
+export { teamStreak, type TeamStreakResult } from './core/social/streak.ts';
+export {
+  normalizeEmail,
+  friendPair,
+  toPublicUser,
+  toAdminUser,
+  type Account,
+  type AccountsStore,
+  type AdminUser,
+  type PublicUser,
+  type PersonaPack,
+  type Friendship,
+  type Session,
+  type Role,
+  type PackStatus,
+} from './core/social/types.ts';
 export { MockChatLlm, NullChatLlm, callTool, say } from './core/chat/mock.ts';
 export {
   FetchChatLlm,

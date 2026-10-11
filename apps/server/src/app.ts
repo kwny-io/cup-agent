@@ -19,6 +19,9 @@ import type { ChatLlm } from './core/chat/types.ts';
 import { MemoryChatStore, type ChatStore } from './core/chat/memory.ts';
 import { FileChatStore } from './core/chat/file-memory.ts';
 import { FilePersistence } from './core/persist.ts';
+import { FileAccountsStore, MemoryAccountsStore } from './core/social/accounts.ts';
+import type { AccountsStore } from './core/social/types.ts';
+import { FileProfileStore, MemoryProfileStore, type ProfileStore } from './core/traits.ts';
 import { ProactiveScheduler } from './core/proactive.ts';
 import { randomBytes } from 'node:crypto';
 import type { Server } from 'node:http';
@@ -60,6 +63,23 @@ export interface AppOptions {
    * 默认 false(强制)。旧的"未设 CUP_API_KEY 即放行"语义已废除。
    */
   allowUnauth?: boolean;
+  /**
+   * 读端点也要鉴权(可选层,默认 false → 读端点开放)。
+   * 真正的读侧鉴权需账号/会话体系,这里只给一个开关。
+   */
+  readAuth?: boolean;
+  /**
+   * 账号 / 会话 / 市场 / 社交存储;不给则有 dataDir → 文件实现(social.json),
+   * 否则内存实现(测试/离线用)。
+   */
+  accounts?: AccountsStore;
+  /** 人格档案存储(#72);不给则随 dataDir 走文件实现,否则内存 */
+  profiles?: ProfileStore;
+  /**
+   * 首个管理员引导邮箱(cli 从 env `CUP_ADMIN_EMAIL` 读入)。注册命中该邮箱 →
+   * role='admin'。**不新增注册口子**:管理员也只能走正常注册。
+   */
+  adminEmail?: string;
   log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
 }
 
@@ -71,6 +91,10 @@ export interface App {
   llm: Llm;
   chatLlm: ChatLlm;
   chatMemory: ChatStore;
+  /** 账号 / 会话 / 市场 / 社交存储(文件或内存) */
+  accounts: AccountsStore;
+  /** 人格档案存储(#72:昵称 + 派生性格快照) */
+  profiles: ProfileStore;
   /** 文件持久化句柄(未启用 dataDir 时为 null) */
   persist: FilePersistence | null;
   /** 主动开口调度器(未开启 proactive 时为 null) */
@@ -105,6 +129,12 @@ export function createApp(opts: AppOptions = {}): App {
   const llm = opts.llm ?? new NullLlm();
   const chatLlm = opts.chatLlm ?? new NullChatLlm();
   const chatMemory = opts.chatMemory ?? (persist ? new FileChatStore(persist) : new MemoryChatStore());
+  // 账号 / 会话 / 市场 / 社交(独立文件 social.json,与 state.json 同一套原子写机制)。
+  const accounts =
+    opts.accounts ?? (opts.dataDir ? new FileAccountsStore(opts.dataDir) : new MemoryAccountsStore());
+  // 人格档案(#72):挂在 state.json 的 traits 段上(无 dataDir 则内存)
+  const profiles =
+    opts.profiles ?? (persist ? new FileProfileStore(persist) : new MemoryProfileStore());
   const cups = opts.cups ?? [];
 
   // 主动开口(P5):只有显式开启才起 —— 默认关,免得测试/离线环境里乱说话。
@@ -146,6 +176,10 @@ export function createApp(opts: AppOptions = {}): App {
     chatMemory,
     apiKey,
     allowUnauth: opts.allowUnauth,
+    readAuth: opts.readAuth,
+    accounts,
+    profiles,
+    adminEmail: opts.adminEmail,
     log,
   });
   live.attach(server);
@@ -161,6 +195,8 @@ export function createApp(opts: AppOptions = {}): App {
     llm,
     chatLlm,
     chatMemory,
+    accounts,
+    profiles,
     persist,
     proactive,
     apiKey: apiKey ?? null,
@@ -183,6 +219,8 @@ export function createApp(opts: AppOptions = {}): App {
       mqtt?.stop();
       live.close();
       await chatMemory.flush(); // 会话记忆落盘(内存实现 no-op)
+      await accounts.flush(); // 账号 / 会话 / 市场 / 社交落盘(内存实现 no-op)
+      await profiles.flush(); // 人格档案落盘(内存实现 no-op)
       await persist?.flush(); // 目标 + 画像落盘
       await new Promise<void>((r) => server.close(() => r()));
     },

@@ -16,6 +16,19 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ChatTurnRecord } from './chat/memory.ts';
+import type { TraitRecord } from './personality.ts';
+
+/**
+ * 人格档案(养成卡的服务端半边;#72)—— 昵称 + 派生性格快照。
+ * 定义放这里(而非 traits.ts)是因为 `PersistState` 要引用它,而 traits.ts 又要引用
+ * `FilePersistence` —— 放 traits.ts 会成环。这里只依赖 personality.ts(无回边)。
+ */
+export interface ProfileRecord {
+  /** 用户给杯子起的昵称(空串 = 没起) */
+  nickname: string;
+  /** 派生性格快照(只 5 个数值 + 时刻,不含 reason 自由文本) */
+  traits: TraitRecord;
+}
 
 export interface PersistState {
   /** cupId → 目标 ml */
@@ -26,9 +39,23 @@ export interface PersistState {
   profiles: Record<string, string>;
   /** cupId → 上次画像蒸馏时刻(ms);缺省视为从未蒸馏 */
   distilledAt: Record<string, number>;
+  /** cupId → 人格档案(昵称 + 派生性格快照;养成卡 / 迁移码用;#72) */
+  traits: Record<string, ProfileRecord>;
 }
 
 const FLUSH_DEBOUNCE_MS = 500;
+
+/**
+ * 原子写一个 JSON 文件(临时文件 + 同目录 rename)。
+ * 抽出来给社交域(账号/会话/市场/好友)复用 —— 那是**独立文件** social.json,
+ * 但"写坏半截就毁全档"的风险一样,别各写一份。
+ */
+export function atomicWriteJson(path: string, obj: unknown): void {
+  const tmp = `${path}.tmp`;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(tmp, JSON.stringify(obj), 'utf8');
+  renameSync(tmp, path);
+}
 
 /**
  * 文件持久化。读一次(构造函数),之后内存里维护,定时/显式 flush 落盘。
@@ -64,10 +91,11 @@ export class FilePersistence {
         turns: parsed.turns ?? {},
         profiles: parsed.profiles ?? {},
         distilledAt: parsed.distilledAt ?? {},
+        traits: parsed.traits ?? {},
       };
     } catch {
       // 文件不存在 / 坏了 → 从空开始(坏文件不会让服务起不来)
-      return { goals: {}, turns: {}, profiles: {}, distilledAt: {} };
+      return { goals: {}, turns: {}, profiles: {}, distilledAt: {}, traits: {} };
     }
   }
 
@@ -87,6 +115,10 @@ export class FilePersistence {
     return { ...this.state.distilledAt };
   }
 
+  traits(): Record<string, ProfileRecord> {
+    return { ...this.state.traits };
+  }
+
   setGoal(cupId: string, ml: number): void {
     this.state.goals[cupId] = ml;
     this.schedule();
@@ -104,6 +136,11 @@ export class FilePersistence {
 
   setDistilledAt(cupId: string, ts: number): void {
     this.state.distilledAt[cupId] = ts;
+    this.schedule();
+  }
+
+  setTraits(cupId: string, t: ProfileRecord): void {
+    this.state.traits[cupId] = t;
     this.schedule();
   }
 

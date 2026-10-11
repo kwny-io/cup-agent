@@ -10,7 +10,7 @@
  * 所以即使 LLM 全挂,Report 也完整、数字也真、前端也永远有东西显示(验收 3)。
  */
 import type { DailyAgg } from './types.ts';
-import { computePersonality, type Disposition, type Personality } from './personality.ts';
+import { computePersonality, warmthRemark, type Disposition, type Personality } from './personality.ts';
 
 /** 战报里的数字骨架 —— 全部来自日聚合,不来自 LLM */
 export interface ReportFacts {
@@ -176,5 +176,8 @@ export function templateHeadline(p: Personality, f: ReportFacts): string {
           ? `,今天挺会照顾自己。`
           : `,再冲一冲?`;
 
-  return head + tail;
+  // 第 2 个性格维度(水温)偶尔上脸:只在明显偏离舒适区时补一句(纯语气、无数字)
+  const warm = warmthRemark(p.warmth);
+
+  return warm ? head + tail + warm : head + tail;
 }

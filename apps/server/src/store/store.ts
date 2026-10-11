@@ -9,6 +9,7 @@
  */
 import type { CupEvent } from '@cup/contract';
 import type { DailyAgg, FusedSample, TelemetryPoint } from '../core/types.ts';
+import { dayKey, dayStart, shiftDay } from '../core/day-boundary.ts';
 
 export interface Store {
   // ── 时序:遥测点 ──
@@ -37,30 +38,12 @@ export interface Store {
 }
 
 // ── 日界 ─────────────────────────────────────────────────────────
+// 实现搬到 core/day-boundary.ts(支持按 --tz/CUP_TZ 配置时区);这里 re-export,
+// 所有 `import { dayKey } from .../store.ts` 的调用点无需改动。
 
-/** 本地日 'YYYY-MM-DD'(按服务器时区;MVP 单机,够用) */
-export function dayKey(ts: number): string {
-  const d = new Date(ts);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-/** 'YYYY-MM-DD' → 该本地日 00:00 的 ms */
-export function dayStart(date: string): number {
-  const [y, m, d] = date.split('-').map(Number);
-  return new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1).getTime();
-}
+export { dayKey, dayStart, shiftDay, setDayTimeZone, getDayTimeZone } from '../core/day-boundary.ts';
 
 export const DEFAULT_GOAL_ML = 1500;
-
-/** 相邻本地日:date ± n 天,返回 'YYYY-MM-DD' */
-export function shiftDay(date: string, n: number): string {
-  const [y, m, d] = date.split('-').map(Number);
-  const dt = new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + n);
-  return dayKey(dt.getTime());
-}
 
 function emptyAgg(cupId: string, date: string, goalMl: number): DailyAgg {
   return {

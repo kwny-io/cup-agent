@@ -103,16 +103,61 @@ test('战报:headline 里的数字都出现在 facts 里(没有凭空数字)', (
 
 test('战报:达标/未达标/一口没喝 → 三种文案都带真实数字或明确说明', () => {
   const ok = templateHeadline(
-    { disposition: 'normal', level: 1, streak: 0, reason: '' },
+    { disposition: 'normal', level: 1, streak: 0, reason: '', warmth: 1, refill_habit: 0.5 },
     { date: '2026-10-08', drank_ml: 1600, goal_ml: GOAL, progress: 100, drink_count: 5, temp_min_c: null, temp_max_c: null, streak: 0, reached_goal: true },
   );
   assert.match(ok, /1600/);
 
   const none = templateHeadline(
-    { disposition: 'sulky', level: 0, streak: 0, reason: '' },
+    { disposition: 'sulky', level: 0, streak: 0, reason: '', warmth: 0.5, refill_habit: 0.5 },
     { date: '2026-10-08', drank_ml: 0, goal_ml: GOAL, progress: 0, drink_count: 0, temp_min_c: null, temp_max_c: null, streak: 0, reached_goal: false },
   );
   assert.match(none, /一口都没喝/);
+});
+
+// ── S2:性格更多维度(水温 · 续杯)──────────────────────────────────
+
+/** 在 agg 基础上钉死水温(三个温度字段同值,便于算 avg) */
+function aggT(date: string, drank: number, temp: number | null): DailyAgg {
+  const a = agg(date, drank);
+  return { ...a, temp_avg_c: temp, temp_min_c: temp, temp_max_c: temp };
+}
+
+test('性格维度:水温落在舒适区(35–55)→ warmth 高', () => {
+  const recent = [aggT('2026-10-06', 1600, 45), aggT('2026-10-07', 1600, 50)];
+  assert.ok(computePersonality(recent, true).warmth >= 0.9);
+});
+
+test('性格维度:水一直冰凉 → warmth 低', () => {
+  const recent = [aggT('2026-10-06', 1600, 5), aggT('2026-10-07', 1600, 8)];
+  assert.ok(computePersonality(recent, true).warmth < 0.2);
+});
+
+test('性格维度:窗口内无任何温度数据 → warmth 中性 0.5(不夸不贬)', () => {
+  const recent = [aggT('2026-10-06', 1600, null), aggT('2026-10-07', 1600, null)];
+  assert.equal(computePersonality(recent, true).warmth, 0.5);
+});
+
+test('性格维度:常续杯 → refill_habit 1;从不续杯 → 0', () => {
+  const a = agg('2026-10-06', 1600);
+  const b = agg('2026-10-07', 1600);
+  assert.equal(computePersonality([{ ...a, refill_ml: 300 }, { ...b, refill_ml: 200 }], true).refill_habit, 1);
+  assert.equal(computePersonality([a, b], true).refill_habit, 0);
+});
+
+test('性格维度:水温明显偏凉 → headline 补一句,且不引入凭空数字', () => {
+  const cold = aggT('2026-10-08', 1600, 6);
+  const r = generateReport(cold, [cold]);
+  assert.match(r.headline, /凉/);
+  // 不变量:补的这句不含数字,headline 所有数字仍来自 facts
+  const nums = (r.headline.match(/\d+/g) ?? []).map(Number);
+  const allowed = new Set([r.facts.drank_ml, r.facts.goal_ml, r.facts.streak, r.facts.drink_count]);
+  for (const n of nums) assert.ok(allowed.has(n), `headline 出现了不在 facts 里的数字 ${n}`);
+});
+
+test('性格维度:水温舒适 → headline 是"刚刚好"的口吻', () => {
+  const comfy = aggT('2026-10-08', 1600, 45);
+  assert.match(generateReport(comfy, [comfy]).headline, /刚刚好/);
 });
 
 // ── 验收 3:LLM 降级 ───────────────────────────────────────────────

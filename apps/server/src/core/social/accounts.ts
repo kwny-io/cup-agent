@@ -1,0 +1,277 @@
+/**
+ * 社交域存储 —— `AccountsStore` 的**内存**与**文件**两个实现(照 ChatStore 手法)。
+ *
+ * 跨天不丢的口径同 ADR T14:单进程、查询只有"按 id/邮箱取一个" → 一个 JSON 文件足够。
+ * 文件实现复用 `JsonFile` 基类(去抖 + tmp+rename 原子写),与 state.json 同一套机制。
+ *
+ * **绝不出口 salt/hash**:本文件只在账号内部存解密所需字段;出口一律走 `toPublicUser`。
+ */
+import { join } from 'node:path';
+import { JsonFile } from '../persist-file.ts';
+import {
+  friendPair,
+  normalizeEmail,
+  type Account,
+  type AccountsStore,
+  type Friendship,
+  type PackStatus,
+  type PersonaPack,
+  type Session,
+} from './types.ts';
+
+interface SocialState {
+  accounts: Record<string, Account>;
+  /** token → 会话 */
+  sessions: Record<string, Session>;
+  packs: Record<string, PersonaPack>;
+  /** userId → 已订阅 packId 列表 */
+  subscriptions: Record<string, string[]>;
+  friends: Friendship[];
+}
+
+function emptyState(): SocialState {
+  return { accounts: {}, sessions: {}, packs: {}, subscriptions: {}, friends: [] };
+}
+
+function friendKey(a: string, b: string): string {
+  const [x, y] = friendPair(a, b);
+  return `${x}|${y}`;
+}
+
+// ── 内存实现 ─────────────────────────────────────────────────────
+
+export class MemoryAccountsStore implements AccountsStore {
+  private accounts = new Map<string, Account>(); // userId → account
+  private byEmail = new Map<string, string>(); // email → userId
+  private sessions = new Map<string, Session>(); // token → session
+  private packs = new Map<string, PersonaPack>();
+  private subs = new Map<string, Set<string>>(); // userId → packIds
+  private friendEdges = new Map<string, Friendship>(); // pairKey → friendship
+
+  createAccount(a: Account): void {
+    this.accounts.set(a.user_id, a);
+    this.byEmail.set(normalizeEmail(a.email), a.user_id);
+  }
+
+  accountByEmail(email: string): Account | null {
+    const id = this.byEmail.get(normalizeEmail(email));
+    return id ? (this.accounts.get(id) ?? null) : null;
+  }
+
+  accountById(id: string): Account | null {
+    return this.accounts.get(id) ?? null;
+  }
+
+  listAccounts(): Account[] {
+    return [...this.accounts.values()].sort((x, y) => x.created_at - y.created_at);
+  }
+
+  setDisabled(id: string, v: boolean): void {
+    const a = this.accounts.get(id);
+    if (a) this.accounts.set(id, { ...a, disabled: v });
+  }
+
+  setCup(id: string, cupId: string | null): void {
+    const a = this.accounts.get(id);
+    if (!a) return;
+    if (cupId === null) {
+      const { cup_id: _drop, ...rest } = a;
+      this.accounts.set(id, rest);
+    } else {
+      this.accounts.set(id, { ...a, cup_id: cupId });
+    }
+  }
+
+  putSession(s: Session): void {
+    this.sessions.set(s.token, s);
+  }
+
+  session(token: string): Session | null {
+    return this.sessions.get(token) ?? null;
+  }
+
+  dropSession(token: string): void {
+    this.sessions.delete(token);
+  }
+
+  createPack(p: PersonaPack): void {
+    this.packs.set(p.pack_id, p);
+  }
+
+  packById(id: string): PersonaPack | null {
+    return this.packs.get(id) ?? null;
+  }
+
+  listPacks(status?: PackStatus): PersonaPack[] {
+    const all = [...this.packs.values()].sort((x, y) => y.created_at - x.created_at);
+    return status ? all.filter((p) => p.status === status) : all;
+  }
+
+  setPackStatus(id: string, status: PackStatus): void {
+    const p = this.packs.get(id);
+    if (p) this.packs.set(id, { ...p, status });
+  }
+
+  subscribe(userId: string, packId: string): void {
+    const set = this.subs.get(userId) ?? new Set<string>();
+    set.add(packId);
+    this.subs.set(userId, set);
+  }
+
+  subscriptions(userId: string): string[] {
+    return [...(this.subs.get(userId) ?? new Set<string>())];
+  }
+
+  addFriend(a: string, b: string): void {
+    if (a === b) return;
+    const [x, y] = friendPair(a, b);
+    this.friendEdges.set(friendKey(a, b), { a_user_id: x, b_user_id: y, created_at: Date.now() });
+  }
+
+  friends(userId: string): string[] {
+    const out: string[] = [];
+    for (const f of this.friendEdges.values()) {
+      if (f.a_user_id === userId) out.push(f.b_user_id);
+      else if (f.b_user_id === userId) out.push(f.a_user_id);
+    }
+    return out;
+  }
+
+  async flush(): Promise<void> {
+    // 内存实现无持久,no-op
+  }
+}
+
+// ── 文件实现 ─────────────────────────────────────────────────────
+
+export class FileAccountsStore implements AccountsStore {
+  private readonly file: JsonFile<SocialState>;
+
+  constructor(dir: string) {
+    this.file = new JsonFile<SocialState>(join(dir, 'social.json'), emptyState(), (p) => ({
+      accounts: p.accounts ?? {},
+      sessions: p.sessions ?? {},
+      packs: p.packs ?? {},
+      subscriptions: p.subscriptions ?? {},
+      friends: p.friends ?? [],
+    }));
+  }
+
+  // JsonFile 暴露 `data` 访问器(改完 flushSoon);这里起个短名免得满屏 this.file.data
+  private get s(): SocialState {
+    return this.file.data;
+  }
+
+  createAccount(a: Account): void {
+    this.s.accounts[a.user_id] = a;
+    this.file.flushSoon();
+  }
+
+  accountByEmail(email: string): Account | null {
+    const target = normalizeEmail(email);
+    for (const a of Object.values(this.s.accounts)) {
+      if (normalizeEmail(a.email) === target) return a;
+    }
+    return null;
+  }
+
+  accountById(id: string): Account | null {
+    return this.s.accounts[id] ?? null;
+  }
+
+  listAccounts(): Account[] {
+    return Object.values(this.s.accounts).sort((x, y) => x.created_at - y.created_at);
+  }
+
+  setDisabled(id: string, v: boolean): void {
+    const a = this.s.accounts[id];
+    if (a) {
+      this.s.accounts[id] = { ...a, disabled: v };
+      this.file.flushSoon();
+    }
+  }
+
+  setCup(id: string, cupId: string | null): void {
+    const a = this.s.accounts[id];
+    if (!a) return;
+    if (cupId === null) {
+      const { cup_id: _drop, ...rest } = a;
+      this.s.accounts[id] = rest;
+    } else {
+      this.s.accounts[id] = { ...a, cup_id: cupId };
+    }
+    this.file.flushSoon();
+  }
+
+  putSession(s: Session): void {
+    this.s.sessions[s.token] = s;
+    this.file.flushSoon();
+  }
+
+  session(token: string): Session | null {
+    return this.s.sessions[token] ?? null;
+  }
+
+  dropSession(token: string): void {
+    if (this.s.sessions[token]) {
+      delete this.s.sessions[token];
+      this.file.flushSoon();
+    }
+  }
+
+  createPack(p: PersonaPack): void {
+    this.s.packs[p.pack_id] = p;
+    this.file.flushSoon();
+  }
+
+  packById(id: string): PersonaPack | null {
+    return this.s.packs[id] ?? null;
+  }
+
+  listPacks(status?: PackStatus): PersonaPack[] {
+    const all = Object.values(this.s.packs).sort((x, y) => y.created_at - x.created_at);
+    return status ? all.filter((p) => p.status === status) : all;
+  }
+
+  setPackStatus(id: string, status: PackStatus): void {
+    const p = this.s.packs[id];
+    if (p) {
+      this.s.packs[id] = { ...p, status };
+      this.file.flushSoon();
+    }
+  }
+
+  subscribe(userId: string, packId: string): void {
+    const cur = this.s.subscriptions[userId] ?? [];
+    if (!cur.includes(packId)) {
+      this.s.subscriptions[userId] = cur.concat(packId);
+      this.file.flushSoon();
+    }
+  }
+
+  subscriptions(userId: string): string[] {
+    return [...(this.s.subscriptions[userId] ?? [])];
+  }
+
+  addFriend(a: string, b: string): void {
+    if (a === b) return;
+    const key = friendKey(a, b);
+    if (this.s.friends.some((f) => friendKey(f.a_user_id, f.b_user_id) === key)) return;
+    const [x, y] = friendPair(a, b);
+    this.s.friends.push({ a_user_id: x, b_user_id: y, created_at: Date.now() });
+    this.file.flushSoon();
+  }
+
+  friends(userId: string): string[] {
+    const out: string[] = [];
+    for (const f of this.s.friends) {
+      if (f.a_user_id === userId) out.push(f.b_user_id);
+      else if (f.b_user_id === userId) out.push(f.a_user_id);
+    }
+    return out;
+  }
+
+  async flush(): Promise<void> {
+    await this.file.flush();
+  }
+}

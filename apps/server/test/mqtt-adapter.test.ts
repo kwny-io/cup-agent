@@ -43,7 +43,7 @@ class StubTransport implements MqttTransport {
     this.topics.push(topic);
     this.handler = onMessage;
   }
-  publish(topic: string, payload: string): boolean {
+  async publish(topic: string, payload: string): Promise<boolean> {
     this.published.push({ topic, payload });
     return true;
   }
@@ -58,9 +58,31 @@ class StubTransport implements MqttTransport {
 
 /** 发布永远失败,用来验捎回失败回队 */
 class FlakyTransport extends StubTransport {
-  override publish(): boolean {
+  override async publish(): Promise<boolean> {
     return false;
   }
+}
+
+/**
+ * 发布**先记下**再挂住,由测试决定何时(PUBACK 到达)解挂、结果成败 ——
+ * 用来验 R11 的要害:"指令被取走"与"PUBACK 到达"之间撞上 stop(),不该回队。
+ */
+class GatedTransport extends StubTransport {
+  result = true;
+  release: () => void = () => {};
+  private gate = new Promise<void>((r) => {
+    this.release = r;
+  });
+  override async publish(topic: string, payload: string): Promise<boolean> {
+    this.published.push({ topic, payload });
+    await this.gate;
+    return this.result;
+  }
+}
+
+/** 让挂起的微任务(如 await publish 之后的回队)先跑完 */
+function flush(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 0));
 }
 
 // ── 夹具 ─────────────────────────────────────────────────────────
@@ -207,14 +229,38 @@ test('捎回:过期指令被丢弃,不发布', () => {
   assert.equal(commands.peek(BASE).length, 0, '过期者在 takeFor 里已被丢');
 });
 
-test('捎回:发布失败 → 指令回队,不丢', () => {
+test('捎回:发布失败 → 指令回队,不丢', async () => {
   const transport = new FlakyTransport();
   const { commands } = setup(transport);
   commands.enqueue(cmd({ cmd_id: 'c-keep' }));
   transport.deliver(`dev/${BASE}/up`, JSON.stringify(baseFrame()));
+  await flush(); // 回队发生在 await publish 之后(PUBACK 失败的微任务),等一拍再断言
   assert.equal(transport.published.length, 0, '失败时不记入 published');
   assert.equal(commands.peek(BASE).length, 1, '指令应回队');
   assert.equal(commands.peek(BASE)[0]!.cmd_id, 'c-keep');
+});
+
+test('R11:捎回成功(broker 回 PUBACK)→ 指令从队列删除,不回队', async () => {
+  const { commands, transport } = setup();
+  commands.enqueue(cmd({ cmd_id: 'c-ack' }));
+  transport.deliver(`dev/${BASE}/up`, JSON.stringify(baseFrame()));
+  await flush();
+  assert.equal(transport.published.length, 1, '发布了一次');
+  assert.equal(commands.peek(BASE).length, 0, 'PUBACK 后指令应从队列删除');
+});
+
+test('R11:发布失败但期间已 stop() → 不回队(适配器已冻结)', async () => {
+  const transport = new GatedTransport();
+  transport.result = false; // 这次 PUBACK 失败
+  const { commands, handle } = setup(transport);
+  commands.enqueue(cmd({ cmd_id: 'c-inflight' }));
+  transport.deliver(`dev/${BASE}/up`, JSON.stringify(baseFrame()));
+  assert.equal(transport.published.length, 1, '已在途');
+  assert.equal(commands.peek(BASE).length, 0, '取走后队列已空');
+  handle.stop(); // 关闭发生在 PUBACK 到达前
+  transport.release(); // 失败的 PUBACK 现在到达
+  await flush();
+  assert.equal(commands.peek(BASE).length, 0, 'stop 后不应再 requeue(状态已冻结)');
 });
 
 // ── topic 校验 / stop ───────────────────────────────────────────
