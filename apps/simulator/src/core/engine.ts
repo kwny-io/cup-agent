@@ -97,6 +97,8 @@ export class Engine {
   private offBasePending = false;
   private rng: () => number;
   private running = false;
+  /** 手动控制暂停:为真时 runRealtime 不推进引擎(脚本停摆,但连接仍在) */
+  private paused = false;
 
   constructor(opts: {
     config?: Partial<SimConfig>;
@@ -148,6 +150,15 @@ export class Engine {
   /** 挂上 WebSocket 出口(在 sink 之外额外广播) */
   wireWs(ws: { broadcast: (f: Frame) => void } | null): void {
     this.ws = ws;
+  }
+
+  /** 手动控制:暂停/恢复脚本推进(runRealtime 每 tick 检查)。 */
+  setPaused(p: boolean): void {
+    this.paused = p;
+  }
+
+  get isPaused(): boolean {
+    return this.paused;
   }
 
   /** 按真实时间推进 dtMs 毫秒 */
@@ -229,16 +240,22 @@ export class Engine {
     const endVirtualMs = lastAt + 60_000;
     this.running = true;
     return new Promise((resolve) => {
+      const done = (): void => {
+        clearInterval(timer);
+        this.running = false;
+        resolve();
+      };
       const timer = setInterval(() => {
+        if (this.paused) return; // 手动暂停:不推进虚拟时间(连接与出口仍在)
         this.step(onTickMs);
-        if (this.clock.virtualElapsedMs >= endVirtualMs) {
-          clearInterval(timer);
-          this.running = false;
-          resolve();
-        }
+        if (this.clock.virtualElapsedMs >= endVirtualMs) done();
       }, onTickMs);
+      this.stopRealtime = done;
     });
   }
+
+  /** 外部停止实时循环(测试收尾 / 优雅退出)。 */
+  stopRealtime: (() => void) | null = null;
 
   /**
    * 跑完整个脚本:推进到最后一个动作之后 scoreMs 毫秒(虚拟时间)。

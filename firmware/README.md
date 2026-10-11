@@ -35,6 +35,8 @@ firmware/
 │   ├── led_pattern.{h,c}         remind 灯效决策:led 名 → 效果序列(纯 C)
 │   ├── led_driver.{h,c}          板载 LED 驱动:LEDC/PWM,亮/灭/闪/呼吸(ESP-IDF)
 │   ├── ota_manifest.{h,c}        ota manifest 解析与校验:url/sha256/size(纯 C;下载归 IDF 半)
+│   ├── eye_state.{h,c}           硬件脸眼睛状态机:十二态词汇表 + 交接闭眼 + 水烫叠加(纯 C)
+│   ├── eye_render.{h,c}          硬件脸点阵渲染:128×128 单色 + 1bpp 打包 + 脏行/脏段(纯 C)
 │   ├── wifi_sta.{h,c}            Wi-Fi STA + wifi_bringup() 联网上线总入口(ESP-IDF)
 │   ├── prov.{h,c}                BLE 配网(wifi_prov_mgr 薄壳,首次拿 Wi-Fi 凭据)
 │   └── mqtt_uplink.{h,c}         esp-mqtt 上行/下行(ESP-IDF)
@@ -49,7 +51,8 @@ firmware/
 │   │   ├── realtime.{h,c}        实时档决策:晃动/App 请求 → 40Hz 带 IMU,窗过回落(纯 C)
 │   │   ├── sensor_source.{h,c}   传感源:默认合成源(纯 C),真驱动按需接
 │   │   ├── sensor_convert.{h,c}  传感器换算:芯片字节 → 物理量(BMI160/DS18B20/VL53L0X/INA219,纯 C)
-│   │   └── lid_main.c            app_main + 主循环(ESP-IDF)
+│   │   ├── face_display.{h,c}     硬件脸显示薄壳:眼睛点阵按**脏行**推 Memory LCD(局部刷新省电;IDF 壳)
+│   │   └── lid_main.c            app_main + 主循环 + 脸任务(ESP-IDF)
 │   └── host_test/                宿主单测(PC 上跑,不需要 ESP-IDF)
 │       ├── test_*.c              (含 cup_common 纯 C 层的测试:cmd_payload/cmd_exec/led_pattern 等)
 │       └── run_all.sh            总入口(从 firmware/ 根编译,覆盖盖 + 底座的所有纯 C 层)
@@ -93,7 +96,7 @@ CC=/c/mingw64/mingw64/bin/gcc.exe bash lid/host_test/run_all.sh
 
 (Linux/macOS 或已把 gcc 放进 PATH:直接 `bash lid/host_test/run_all.sh`。)
 
-当前**十七组、共 405 条**断言全绿:
+当前**十九组、共 498 条**断言全绿:
 
 - `contract_dev` 59 条 —— 枚举字符串逐字、换算对齐 `constants.ts`、盖/底座两种信封字段、
   `ts` 13 位不回绕、`amount_ml` 仅 drink/refill、**base 无 imu/rssi 字段**、缓冲不足不越界
@@ -136,6 +139,17 @@ CC=/c/mingw64/mingw64/bin/gcc.exe bash lid/host_test/run_all.sh
   合法 `{url,sha256,size}` 取全、url 须 `http(s)://` 前缀且长度在 [8,512]、**sha256 恰 64 个 hex
   字符**(多/少一位都拒 —— 不被"截断到 cap"骗过)、size ∈ (0,4MB](契约占位 0 拒)、缺字段/错
   cmd_id 拒、乱序与嵌套 payload 仍取全、`ota_sha256_to_bytes` 解码成 32 字节(含非 hex 拒)
+- `eye_state` 57 条 —— **硬件脸眼睛状态机**(双形体人格的硬件半边):十二态优先级
+  (交接 > 受惊 > 强制表情 > 物理 > 低电 > 瞬时 > 环境 > 待机)、**交接闭眼包络**(§1.3 签名时刻:
+  状态名当帧切、开度 0.4s 缓动)、**水烫是叠加态**(不改状态名,只叠眯眼 + 蒸汽相位)、
+  **低电三次慢眨**(§3 #11)、一次性强制表情(§5.1 #1,不越交接)、眨眼瞬态、水低更耷拉;
+  **钉死契约 motion 枚举序**(idle,tilt,shake,lifted —— 曾把本文件误写成 lifted 在前)
+- `eye_render` 36 条 —— **硬件脸点阵渲染**(128×128 单色):睁眼有眼白、闭眼是矮横线、
+  **瞳孔挖空**(眼窝中心灭)、弧眼(content 中段上拱)、倾斜整眼旋转、**水烫蒸汽带**(仅 hot 亮、
+  随相位飘)、**1bpp 打包 2048 字节整屏**且逐位与像素一致、越界安全;
+  **逐行脏标记**(`eye_render_dirty_rows`)+ **脏行合并成连续段**(`eye_render_dirty_spans` ——
+  Memory LCD 局部刷新省电的核心决策,边界:首行脏/末行脏/隔行脏全在纯 C 里钉死,
+  IDF 薄壳只循段推面板)
 
 ---
 

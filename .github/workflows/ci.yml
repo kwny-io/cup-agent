@@ -1,0 +1,48 @@
+name: CI
+
+# 每次推 main / 开 PR 都跑。三个互不依赖的闸:
+#   1. 类型检查  —— 根 tsc + apps/web 的 tsc(web 此前不在根脚本里,已并入 root typecheck)
+#   2. JS 测试   —— 契约 + 模拟器 + 后端(node --test)
+#   3. 固件宿主单测 —— 零 IDF 依赖的纯 C 层(gcc 直接编,见 firmware/README §一)
+# 固件那一闸尤其关键:本机(开发机)不带 C 编译器,纯 C 层只能靠 CI 兜住。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck:
+    name: 类型检查(tsc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    name: JS 测试(契约 / 模拟器 / 后端)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: 前端测试(@cup/web)
+        run: npm --workspace @cup/web test
+
+  firmware:
+    name: 固件宿主单测(纯 C)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ubuntu-latest 自带 gcc(cc → gcc)。不装 ESP-IDF:跑的只是零 IDF 依赖的纯 C 层。
+      - name: 跑宿主单测
+        run: bash firmware/lid/host_test/run_all.sh

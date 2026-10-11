@@ -1,18 +1,23 @@
 # cup-agent
 
+[![CI](https://github.com/kwny-io/cup-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/kwny-io/cup-agent/actions/workflows/ci.yml)
+
 智能水杯的**软件侧**。硬件(杯盖 + 底座)另线推进,软件先用模拟器顶替。
 
 ```
 packages/contract   四方共享的数据契约 —— 唯一真相源(zod schema + TS 类型)
-apps/simulator      假杯子:假杯盖 + 假底座 + 行为脚本 + 时间加速
-apps/server         后端:ingest 适配层 → 事件管线(双源融合)→ Store → REST/WS
+apps/simulator      假杯子:假杯盖 + 假底座 + 行为脚本 + 时间加速(见 apps/simulator/README.md)
+apps/server         后端:ingest 适配层 → 事件管线(双源融合)→ Store → REST/WS(见 apps/server/README.md)
+apps/web            前端:卡通杯 + 数据看板 + 对话(见 apps/web/README.md)
 ```
 
 ## 快速开始
 
 ```bash
 npm install
-npm test          # 178 个测试:契约 + 模拟器行为 + 后端管线/验收/性格层/对话/画像蒸馏/MQTT/API
+npm test          # 221 个测试:契约 + 模拟器行为/手动控制 + 后端管线/验收/性格层/对话/画像蒸馏/MQTT/HTTP 中转/API/日界时区
+npm run typecheck # 类型检查(根 tsc + apps/web)—— CI 三闸之一
+npm --workspace @cup/web test   # 前端 168 个测试:纯逻辑单测 + 组件级测试(jsdom 真挂载)
 npm run sim       # 跑典型一天(默认 60× 加速)
 npm run server    # 起后端 API(:8788)
 ```
@@ -49,6 +54,20 @@ node apps/simulator/src/cli.ts --report-ms 10000        # 上报间隔改为 10 
 node apps/simulator/src/cli.ts --quiet                  # 只输出事件
 ```
 
+**手动触发**(`--ws` 后,向控制通道发 JSON,不必等脚本轮到那一刻):
+
+```bash
+node apps/simulator/src/cli.ts --ws 8787               # 起 WS
+
+# 另一终端(需 ws 客户端;演示可临时用 node 一行):
+#   {"type":"drink","ml":60}                    喝一口
+#   {"type":"shake","duration_ms":1500}         摇杯
+#   {"type":"hot_water","target_ml":300,"pour_c":85}  倒热水(触发过热)
+#   {"type":"tilt","deg":50,"dir":90} / {"type":"idle"}  倾倒 / 回正
+#   {"type":"lift"} / {"type":"put_down"}       拿起 / 放下
+#   {"type":"pause"} / {"type":"resume"}        暂停 / 恢复脚本
+```
+
 ## 设计要点
 
 - **契约先行**:`packages/contract` 是字段定义的唯一来源。改字段 → 前后端编译期就报错,不靠人记。
@@ -61,6 +80,9 @@ node apps/simulator/src/cli.ts --quiet                  # 只输出事件
 
 - **ingest 适配层**:`sim-adapter` 连模拟器 WS,逐条做契约校验,拒收脏数据并记日志。
   换链路(真机 MQTT)只加 adapter,下游不动 —— 这就是原则 P1。
+  第三个适配器 **`http-adapter`** 走写端点 `POST /cups/:id/ingest`:一次 POST 一坨帧
+  (真机弱网补传 / 网关中转用),归一 `{frame}` / `{frames:[...]}` / 裸数组,逐帧过同一套
+  契约 §2 再灌进**同一条**管线(校验挡在最前,脏数据不进 Store)。
 - **双源融合**(D2 核心,非可选):底座称重**精确但失明**,杯盖 ToF **在线但粗糙**。
   底座在座时做锚(conf 0.98),杯子被拿起时退到杯盖并用**偏置追踪**回锚。
   契约的 `derived_by` / `confidence` 字段就是为这层留的。
@@ -92,8 +114,12 @@ node apps/simulator/src/cli.ts --quiet                  # 只输出事件
 见桌面文档《plan.md》。当前完成 **M0**(契约冻结 + 模拟器)、**M1**(后端骨架)、
 **M2**(前端外壳 + 看板,已接后端)、**M3**(卡通杯 + 水波物理,英雄功能成型)、
 **M4**(性格层 LLM + 战报)、**M5-对话**(软件线:问杯子 / 记忆 / 主动开口)。
-**M5 真机 bring-up**(杯盖固件 `firmware/lid/`,源码就绪、宿主单测 17 组 405 条全绿,**待真板编译烧录**)
+**M5 真机 bring-up**(杯盖固件 `firmware/lid/`,源码就绪、宿主单测 19 组 498 条全绿,**待真板编译烧录**)
 与 **M6 底座**属硬件线,按契约并行推进。
+
+## 贡献
+
+改代码前读 [CONTRIBUTING.md](CONTRIBUTING.md):目录分工、三道门禁(与 CI 一致)、固件的「纯 C 可测 / IDF 薄壳」分法、依赖与许可证约定。
 
 ## License
 

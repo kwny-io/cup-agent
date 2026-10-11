@@ -61,6 +61,10 @@ run_one uplink_buffer  components/cup_common/uplink_buffer.c  lid/host_test/test
 run_one led_pattern    components/cup_common/led_pattern.c   lid/host_test/test_led_pattern.c
 # 下行 ota 的 manifest 解析与校验(纯 C):url 前缀/长度、sha256 恰 64 hex、size 范围、hex→bytes
 run_one ota_manifest   components/cup_common/ota_manifest.c  lid/host_test/test_ota_manifest.c
+# 硬件脸 · 眼睛状态机(纯 C,双形体人格的硬件半边):十二态优先级 / 交接闭眼 / 水烫叠加 / 低电慢眨
+run_one eye_state      components/cup_common/eye_state.c     lid/host_test/test_eye_state.c
+# 硬件脸 · 点阵渲染(纯 C):128×128 单色,瞳孔挖空 / 弧眼 / 蒸汽带 / 1bpp 打包(2048 字节整屏)
+run_one eye_render     components/cup_common/eye_render.c    lid/host_test/test_eye_render.c
 
 if [ "$fail" -eq 0 ]; then
   echo "== 全部宿主单测通过 =="

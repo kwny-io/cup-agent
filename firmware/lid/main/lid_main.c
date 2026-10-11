@@ -22,6 +22,7 @@
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -30,6 +31,8 @@
 #include "cmd_store.h"
 #include "command_parse.h"
 #include "contract_dev.h"
+#include "eye_state.h"
+#include "face_display.h"
 #include "led_driver.h"
 #include "led_pattern.h"
 #include "ota_manifest.h"
@@ -218,6 +221,67 @@ static bool publish_telemetry(const sensor_sample_t *s, motion_state_t motion, f
     return true;
 }
 
+// ── 硬件脸(双形体人格的硬件半边)──────────────────────────────────
+// 眼睛状态机(eye_state,纯 C)在杯盖本地按固定帧率推进,结果经 face_display
+// **只推脏行**给 Memory LCD(备忘 §2:局部刷新才有 62 天续航)。
+//
+// 输入从哪来:主循环每轮把"该长什么样"的快照写进 s_eye_in;脸任务只读它喂 eyes_step。
+// 用一把小锁交换(结构小、临界区极短),避免 1Hz~40Hz 主循环与 20Hz 脸任务读到半帧。
+//
+// owner(谁持脸)本 bring-up **恒为盖**:App 会话/交接通道尚未落地(见 realtime 的
+// rt_request 现也写死 false)—— 真板接上 App 后由"谁在前台"翻转成 SCREEN,盖子即
+// 按 §1.3 平滑闭眼。forgot_sec 同理:现用"距上次下行/动作"当代理,真板接 App 活跃度后替换。
+#define FACE_TASK_HZ 20
+#define FACE_FRAME_MS (1000 / FACE_TASK_HZ)
+
+static eye_eyes_t      s_eyes;                 // 仅脸任务触碰(状态机实例)
+static eye_inputs_t    s_eye_in;               // 主循环写、脸任务读 → 加锁
+static bool            s_eye_drink_pulse;      // 主循环置"喝了一口",脸任务消费并清 → 同锁
+static SemaphoreHandle_t s_eye_lock;
+static volatile uint32_t s_eye_idle_ms = 0;    // 上次"有事"的本机毫秒(算 idle_sec)
+static volatile uint32_t s_eye_forgot_ms = 0;  // 上次下行/动作的本机毫秒(算 forgot_sec)
+
+/**
+ * 主循环侧:更新脸输入快照 + 可选"喝了一口"脉冲(带锁;非阻塞取锁,拿不到就跳过本帧,脸不卡)。
+ * 注意:眼睛实例 s_eyes **只归脸任务**;主循环绝不直接调 eyes_*(否则跨任务竞争)。
+ * 事件(喝水)经这个脉冲端口传过去,由脸任务在 step 前应用。
+ */
+static void face_post_inputs(const eye_inputs_t *in, bool drink_pulse) {
+    if (s_eye_lock && xSemaphoreTake(s_eye_lock, 0) == pdTRUE) {
+        s_eye_in = *in;
+        if (drink_pulse) s_eye_drink_pulse = true;
+        xSemaphoreGive(s_eye_lock);
+    }
+}
+
+/** 脸任务:按固定帧率推进眼睛状态机,并按脏行推屏。 */
+static void face_task(void *arg) {
+    (void)arg;
+    eyes_init(&s_eyes);
+    const float dt = 1.0f / (float)FACE_TASK_HZ;
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(FACE_FRAME_MS));
+        uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        eye_inputs_t in;
+        bool drink = false;
+        if (s_eye_lock && xSemaphoreTake(s_eye_lock, portMAX_DELAY) == pdTRUE) {
+            in = s_eye_in;
+            drink = s_eye_drink_pulse;
+            s_eye_drink_pulse = false;
+            xSemaphoreGive(s_eye_lock);
+        } else {
+            in = eye_inputs_default();
+        }
+        in.idle_sec   = (float)(now - s_eye_idle_ms) / 1000.0f;
+        in.forgot_sec = (float)(now - s_eye_forgot_ms) / 1000.0f;
+
+        if (drink) eyes_note_drink(&s_eyes);   // 在 step 前应用,避免跨任务触碰 s_eyes
+        const eye_pose_t *pose = eyes_step(&s_eyes, dt, &in);
+        face_display_show(pose);
+    }
+}
+
 void app_main(void) {
     ESP_LOGI(TAG, "杯盖固件启动 —— device=%s cup=%s", CONFIG_CUP_DEVICE_ID,
              CONFIG_CUP_CUP_ID);
@@ -246,6 +310,15 @@ void app_main(void) {
     if (!led_driver_init()) {
         ESP_LOGW(TAG, "LED 驱动初始化失败,remind 点灯不可用(其余功能不受影响)");
     }
+
+    // 硬件脸:起手先给一份默认输入并建锁,再起脸任务(固定帧率推进眼睛 + 局部刷屏)。
+    uint32_t boot_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    s_eye_in = eye_inputs_default();
+    s_eye_idle_ms = boot_ms;
+    s_eye_forgot_ms = boot_ms;
+    s_eye_lock = xSemaphoreCreateMutex();
+    face_display_init();
+    xTaskCreate(face_task, "face", 4096, NULL, 4, NULL);
 
     lid_logic_t logic;
     lid_logic_init(&logic);
@@ -288,6 +361,33 @@ void app_main(void) {
         float level_mm = s.has_level
                              ? level_filter_step(&lvl, s.level_mm, noisy, rel).level_mm
                              : 0.0f;
+
+        // ── 硬件脸:把本帧遥测喂给眼睛状态机(脸任务读快照推进)──────────
+        // owner 本 bring-up 恒为盖(App 交接通道未落地);disposition 亦恒 NORMAL
+        // (长期性格由后端战报给,接 MQTT 下行后替换)。故这里只喂**本地物理量**。
+        {
+            eye_inputs_t ei = eye_inputs_default();
+            ei.owner = EYE_OWNER_LID;
+            ei.motion = out.motion;
+            ei.tilt_deg = in.tilt_deg;
+            ei.tilt_dir = s.has_tilt ? (float)s.tilt_dir : 0.0f;
+            ei.battery_pct = s.has_battery ? s.battery_pct : EYE_PCT_NONE;
+            ei.charging = s.charging;
+            ei.level01 = s.has_level ? (level_mm / (float)CUP_INNER_MM) : 1.0f;
+            ei.temp_c = s.has_temp ? s.temp_c : NAN;
+
+            // 喝水(水位掉档 ≥2%)→ 眼睛"喝一口满足"(与契约 drink 事件同源阈值)。
+            bool drank = false;
+            static float prev_pct = -1.0f;
+            if (s.has_level) {
+                float pct = level_mm / (float)CUP_INNER_MM;
+                if (prev_pct >= 0.0f && prev_pct - pct >= 0.02f) drank = true;
+                prev_pct = pct;
+            }
+            if (drank) s_eye_idle_ms = now;                    // 有动作 → 重置打盹计时
+            if (out.motion != MOTION_IDLE) s_eye_idle_ms = now;
+            face_post_inputs(&ei, drank);
+        }
 
         // 事件即时上报(时间敏感,不等常规档)
         if (out.emit_shake) publish_event(EVENT_SHAKE, false, 0, false, 0);

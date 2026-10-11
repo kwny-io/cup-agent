@@ -13,5 +13,7 @@ export { startWsServer, toFrames } from './ws/server.ts';
 export type { WsHandle } from './ws/server.ts';
 export { startMqttOutput, upTopic, downTopic } from './mqtt/server.ts';
 export type { MqttOutput, MqttOutputOptions } from './mqtt/server.ts';
+export { parseControl, applyControl } from './core/control.ts';
+export type { ControlCommand, ParseControlResult, ControlOutcome } from './core/control.ts';
 export { typicalDay, smoke } from './scenarios/day.ts';
 export { createRng, gaussian, uniform } from './util/rng.ts';

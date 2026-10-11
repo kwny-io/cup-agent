@@ -14,6 +14,7 @@ import { Engine, dayStartMs, type Frame } from './core/engine.ts';
 import { typicalDay, smoke } from './scenarios/day.ts';
 import { startWsServer } from './ws/server.ts';
 import { startMqttOutput } from './mqtt/server.ts';
+import { parseControl, applyControl } from './core/control.ts';
 import type { CupEvent } from '@cup/contract';
 
 interface Args {
@@ -103,12 +104,6 @@ function main(): void {
 
   const stats = { lid: 0, base: 0, events: {} as Record<string, number> };
 
-  const ws = args.wsPort !== null ? startWsServer(args.wsPort) : null;
-  const mqtt =
-    args.mqttUrl !== null
-      ? startMqttOutput({ url: args.mqttUrl, log: (m) => console.log(m) })
-      : null;
-
   const sink = (frame: Frame): void => {
     if (frame.lid) stats.lid++;
     if (frame.base) stats.base++;
@@ -129,6 +124,35 @@ function main(): void {
     steps,
     sink,
   });
+
+  // 手动控制:WS 客户端发来的 {"type":...} 作用到 world(pause/resume 改主循环)。
+  const onControl = (msg: unknown): void => {
+    const parsed = parseControl(msg);
+    if (!parsed.ok) {
+      console.log(`[控制] 忽略:${parsed.error}`);
+      return;
+    }
+    const outcome = applyControl(
+      {
+        world: engine.world,
+        scheduler: engine.scheduler,
+        clock: engine.clock,
+        log: (m) => console.log(m),
+        config: engine.config,
+      },
+      parsed.cmd,
+    );
+    if (outcome.loop === 'pause') engine.setPaused(true);
+    if (outcome.loop === 'resume') engine.setPaused(false);
+    console.log(`[控制] ${parsed.cmd.type} → ${outcome.detail}`);
+  };
+
+  const ws = args.wsPort !== null ? startWsServer(args.wsPort, onControl) : null;
+  const mqtt =
+    args.mqttUrl !== null
+      ? startMqttOutput({ url: args.mqttUrl, log: (m) => console.log(m) })
+      : null;
+
   // 出口接线:--ws 与 --mqtt 可同给(前端看 WS、后端吃 MQTT)→ fan-out 到两个出口;
   // 只给一个则直连;都没给则不接实时出口(下方走瞬时 runToEnd)。
   const output =

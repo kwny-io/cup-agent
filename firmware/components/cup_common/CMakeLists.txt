@@ -9,6 +9,8 @@
 #   led_pattern.c    remind 灯效决策(纯 C,零 IDF)
 #   led_driver.c     板载 LED 驱动(LEDC/PWM 薄壳)
 #   ota_manifest.c   ota manifest 解析与校验(纯 C,零 IDF;下载/分区归 IDF 半、待真板)
+#   eye_state.c      硬件脸眼睛状态机(十二态,纯 C,零 IDF;双形体人格的硬件半边)
+#   eye_render.c     硬件脸点阵渲染(128×128 单色 + 1bpp 打包,纯 C,零 IDF)
 #   wifi_sta.c       Wi-Fi STA
 #   mqtt_uplink.c    esp-mqtt 上行/下行
 #   prov.c           BLE 配网(wifi_prov_mgr 薄壳,首次拿 Wi-Fi 凭据)
@@ -27,6 +29,8 @@ idf_component_register(
         "led_pattern.c"
         "led_driver.c"
         "ota_manifest.c"
+        "eye_state.c"
+        "eye_render.c"
         "wifi_sta.c"
         "mqtt_uplink.c"
         "prov.c"

@@ -5,6 +5,7 @@
 #   realtime.c       实时档决策(纯 C,零 IDF)
 #   sensor_source.c  传感源(合成默认;纯 C)
 #   sensor_convert.c 芯片字节→物理量换算(纯 C,零 IDF —— 真板到货后接"读字节"半截)
+#   face_display.c   硬件脸显示薄壳(把纯 C 眼睛点阵按脏行推 Memory LCD;IDF)
 #   lid_main.c       app_main + 主循环(ESP-IDF)
 idf_component_register(
     SRCS
@@ -13,6 +14,7 @@ idf_component_register(
         "realtime.c"
         "sensor_source.c"
         "sensor_convert.c"
+        "face_display.c"
         "lid_main.c"
     INCLUDE_DIRS "."
     REQUIRES
