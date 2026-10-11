@@ -100,15 +100,18 @@ export interface ProactiveMessage {
 }
 
 /**
- * 近 N 天趋势 —— 对应 `GET /cups/:id/series?range=week`(后端已返回 7 桶)。
+ * 分桶序列 —— 同一个形状服务两种粒度(`range` 区分):
+ *   · `range=week` → 7 个**按天**桶(趋势卡)
+ *   · `range=day`  → 24 个**按小时**桶(饮水曲线;补上云模式里 WS 给不全的"今天早些时候")
+ * 对应 `GET /cups/:id/series?range=week|day`。
  *
- * 与 ServerToday 的分工:today 是**今天这一天**的聚合(看板顶部数字),
- * series 是**若干天**的分桶(趋势卡)。二者都来自后端日聚合,前端不重算。
+ * 与 ServerToday 的分工:today 是**今天这一天**的一个汇总(看板顶部数字),
+ * series 是分桶明细。二者都来自后端日聚合/事件流,**前端不重算**。
  */
-export interface WeekBucket {
-  /** 展示用日期标签,后端已裁成 MM-DD */
+export interface SeriesBucket {
+  /** 展示用标签:天桶=MM-DD,时桶=HH:00(后端已排好) */
   label: string;
-  /** 桶起点(本地日零点) */
+  /** 桶起点(天桶=本地日零点,时桶=整点) */
   ts: number;
   drank_ml: number;
   refill_ml: number;
@@ -116,10 +119,10 @@ export interface WeekBucket {
   last_volume_ml: number | null;
 }
 
-export interface WeekSeries {
+export interface ServerSeries {
   cup_id: string;
   range: string;
-  buckets: WeekBucket[];
+  buckets: SeriesBucket[];
 }
 
 /**
@@ -208,7 +211,7 @@ export function isServerPersonalityHistory(v: unknown): v is ServerPersonalityHi
 }
 
 /** 守卫:REST 来的 series 形状不对(没 buckets)就当没拿到,不让半截对象进 SVG */
-export function isWeekSeries(v: unknown): v is WeekSeries {
+export function isServerSeries(v: unknown): v is ServerSeries {
   if (!v || typeof v !== 'object') return false;
   const s = v as Record<string, unknown>;
   if (!Array.isArray(s.buckets)) return false;
@@ -269,6 +272,145 @@ export type GoalResult =
 /** 改目标的实现(云 / mock 源都有;纯模拟器源没有) */
 export type SetGoalFn = (goalMl: number) => Promise<GoalResult>;
 
+// ── 多用户 / 市场 / 社交(产品功能;**设备协议无关**,故不入 contract)──────
+//
+// 这些是"登录用户 ↔ 后端"的东西,固件永远看不到 —— 与 ServerToday / ServerReport
+// 同先例,留在前端数据层,不进 packages/contract。云源实现(见 cloud.ts),
+// 模拟器 / mock 源没有这块(social 为 undefined),UI 据此显示空态。
+
+/** 派生性格快照 —— 与后端 TraitRecord 同形(5 数值 + 落盘时刻);迁移码 / 好友互见共用 */
+export interface TraitRecord {
+  disposition: 'sulky' | 'normal' | 'smug';
+  level: number;
+  streak: number;
+  warmth: number;
+  refill_habit: number;
+  updated_at: number;
+}
+
+/** 登录用户的出口视图(后端绝不含 salt/hash) */
+export interface PublicUser {
+  user_id: string;
+  email: string;
+  nickname: string;
+  role: 'user' | 'admin';
+}
+
+/** 管理后台的用户视图 —— 带 disabled(管理员要看出谁被禁了),仍无机密 */
+export interface AdminUser extends PublicUser {
+  disabled: boolean;
+  created_at: number;
+}
+
+/** 人格档案(#72)—— `GET|PUT /cups/:id/profile` */
+export interface ServerProfile {
+  cup_id: string;
+  nickname: string;
+  traits: TraitRecord;
+}
+
+export type PackStatus = 'pending' | 'approved' | 'rejected';
+
+/** 人格市场包(UGC;#73)—— **只带数值 + 文本,不执行代码**;应用前逐项区间钳制 */
+export interface PersonaPack {
+  pack_id: string;
+  author_user_id: string;
+  name: string;
+  tone: string;
+  thresholds: Record<string, number>;
+  wave: Record<string, number>;
+  lines: string[];
+  status: PackStatus;
+  created_at: number;
+}
+
+/** 投稿草稿(与后端 normalizePack 的入口形状一致) */
+export interface PackDraft {
+  name: string;
+  tone: string;
+  thresholds: Record<string, number>;
+  wave: Record<string, number>;
+  lines: string[];
+}
+
+/**
+ * 市场包里允许出现的**阈值键** —— 与后端 `PACK_THRESHOLD_KEYS` 逐字一致(冻结握手)。
+ * 前端不 import 后端(跨 workspace),故这里留一份同源副本;两侧改动必须同步。
+ * 语义区间在 lib/pack-apply.ts(前端最懂 mood.ts 的手感量级)。
+ */
+export const PACK_THRESHOLD_KEYS = [
+  'REFUSE_S',
+  'SMUG_S',
+  'CONTENT_S',
+  'IDLE_S',
+  'SULK_LEVEL',
+  'SULK_STREAK',
+] as const;
+
+/** 水波性格键(对齐 water.ts 的 k/c/damp);同后端 `PACK_WAVE_KEYS` */
+export const PACK_WAVE_KEYS = ['k', 'c', 'damp'] as const;
+
+/** 好友出口视图(#74)—— 好友的昵称 + 派生性格 + streak(绑了杯子才有后两者) */
+export interface FriendView {
+  user_id: string;
+  nickname: string;
+  traits: TraitRecord | null;
+  streak: number | null;
+}
+
+/** 组队 streak 视图(#74)—— `GET /social/team` */
+export interface TeamState {
+  members: number;
+  friends: number;
+  streak: number;
+  days: string[];
+}
+
+/** 登录 / 注册结果;失败带可区分原因(与 ask 同款)与后端人话 */
+export type AuthOutcome =
+  | { ok: true; user: PublicUser }
+  | { ok: false; reason: AskFailure; error?: string };
+
+/**
+ * 社交 / 市场 / 管理的拉式接口(#72/#73/#74)—— 挂在 DataSource 上的**可选**面。
+ *
+ * 为什么用**拉**而不是 DataSourceEvents 的**推**:这些是"用户点一下才动"的
+ * 行为(登录、投稿、加好友),不是杯子每秒推的遥测。照 [useChat] 处理 ask 的先例,
+ * 把动作放接口、状态留组件,REST 请求在点的时候才发 —— 不为坐着不动的用户空拉轮询。
+ * 只有 CloudSource 实现它;模拟器 / mock 源没有(UI 显示"需连后端")。
+ */
+export interface SocialApi {
+  // ── 会话 ──
+  me(): Promise<PublicUser | null>;
+  register(email: string, password: string, nickname?: string): Promise<AuthOutcome>;
+  login(email: string, password: string): Promise<AuthOutcome>;
+  logout(): Promise<void>;
+  /** 是否已有会话令牌(同步判据,给 UI 决定显示登录还是登出) */
+  hasSession(): boolean;
+
+  // ── 人格档案(#72)──
+  getProfile(): Promise<ServerProfile | null>;
+  saveProfile(nickname: string): Promise<ServerProfile | null>;
+
+  // ── 人格市场(#73)──
+  listPacks(): Promise<PersonaPack[]>;
+  submitPack(draft: PackDraft): Promise<PersonaPack | null>;
+  subscribePack(packId: string): Promise<boolean>;
+
+  // ── 管理后台(#73)──
+  adminListUsers(): Promise<AdminUser[]>;
+  adminSetDisabled(userId: string, disabled: boolean): Promise<AdminUser | null>;
+  adminListPacks(status?: PackStatus): Promise<PersonaPack[]>;
+  adminVerdict(packId: string, approve: boolean): Promise<PersonaPack | null>;
+
+  // ── 杯子社交(#74)──
+  listFriends(): Promise<FriendView[]>;
+  addFriend(email: string): Promise<FriendView | null>;
+  bindCup(cupId: string): Promise<boolean>;
+  unbindCup(): Promise<boolean>;
+  getTeam(): Promise<TeamState | null>;
+}
+
 export interface DataSourceEvents {
   frame: (f: LiveFrame) => void;
   state: (s: ConnectionState) => void;
@@ -279,7 +421,13 @@ export interface DataSourceEvents {
   /** 杯子主动搭话(仅 CloudSource 会发)—— 对话线的实时插话出口(P4) */
   proactive: (m: ProactiveMessage) => void;
   /** 近 7 天趋势(仅 CloudSource 会发)—— 趋势卡的出口;无此源时卡片显示空态 */
-  series: (s: WeekSeries) => void;
+  series: (s: ServerSeries) => void;
+  /**
+   * 今日 24 小时分桶(仅 CloudSource 会发)—— 饮水曲线的出口。
+   * 云模式只收得到"连上之后"的 WS 事件,今天早些时候的喝水量它拿不到,
+   * 故曲线改用后端这份**整天**分桶(否则曲线会少半截,与"今日已喝"自相矛盾)。
+   */
+  daySeries: (s: ServerSeries) => void;
   /** 历史战报(仅 CloudSource 会发)—— 逐日回看卡的出口;无此源时卡片显示空态 */
   history: (h: ServerHistory) => void;
   /** 脾气变化史(仅 CloudSource 会发)—— 养成卡的出口;无此源时卡片显示空态 */
@@ -302,6 +450,11 @@ export interface DataSource {
    * 与 ask 同理由放在接口上 —— 不支持写目标的源(纯模拟器)在编译期就被挡住。
    */
   setGoal?(goalMl: number): Promise<GoalResult>;
+  /**
+   * 可选:多用户 / 市场 / 社交(#72/#73/#74)。只有 CloudSource 实现 ——
+   * 这些能力要后端账号体系,模拟器 / mock 源没有(UI 据此显示"需连后端")。
+   */
+  social?: SocialApi;
 }
 
 /** 极简事件发射器,避免引入依赖 */

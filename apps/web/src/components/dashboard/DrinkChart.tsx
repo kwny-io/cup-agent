@@ -5,11 +5,12 @@
  * 引 echarts/recharts 是几十 KB 换三十行代码。等真需要缩放/多轴再议。
  */
 import { Card } from '../ui.tsx';
-import { hourlyIntake } from '../../lib/stats.ts';
+import { intakeBuckets } from '../../lib/stats.ts';
 import type { CupEvent } from '@cup/contract';
+import type { ServerSeries } from '../../data/source.ts';
 
-export function DrinkChart({ events }: { events: CupEvent[] }) {
-  const buckets = hourlyIntake(events);
+export function DrinkChart({ events, daySeries = null }: { events: CupEvent[]; daySeries?: ServerSeries | null }) {
+  const buckets = intakeBuckets(events, daySeries);
   const max = Math.max(60, ...buckets);
 
   return (

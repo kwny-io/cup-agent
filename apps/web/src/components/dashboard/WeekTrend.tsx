@@ -5,12 +5,12 @@
  * 后端日聚合。同样不引图表库(按需引入,P4),7 根柱子不值得拉进 echarts。
  */
 import { Card } from '../ui.tsx';
-import type { WeekSeries } from '../../data/source.ts';
+import type { ServerSeries } from '../../data/source.ts';
 
 /** 达标线参考:后端每桶没有独立 goal,用约定日目标(与 DAILY_GOAL_ML 一致) */
 const GOAL_ML = 1500;
 
-export function WeekTrend({ series, goal = GOAL_ML }: { series: WeekSeries | null; goal?: number }) {
+export function WeekTrend({ series, goal = GOAL_ML }: { series: ServerSeries | null; goal?: number }) {
   const buckets = series?.buckets ?? [];
   // 纵轴上限:至少到目标线,免得达标线跑出画布;再给 15% 余量
   const max = Math.max(goal, ...buckets.map((b) => b.drank_ml)) * 1.15 || 1;
@@ -38,7 +38,7 @@ function WeekBars({
   max,
   goal,
 }: {
-  buckets: WeekSeries['buckets'];
+  buckets: ServerSeries['buckets'];
   max: number;
   goal: number;
 }) {

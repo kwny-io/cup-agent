@@ -21,8 +21,8 @@ import type {
   ServerHistory,
   ServerPersonalityHistory,
   ServerReport,
+  ServerSeries,
   ServerToday,
-  WeekSeries,
 } from '../data/source.ts';
 import type { CupEvent } from '@cup/contract';
 
@@ -34,6 +34,7 @@ export function Dashboard({
   series,
   history,
   personality,
+  daySeries = null,
   goal,
   setGoal,
   chat,
@@ -47,7 +48,9 @@ export function Dashboard({
   /** 后端每日战报;有则战报卡显示后端文案 + 长期性格 */
   report: ServerReport | null;
   /** 后端近 7 天趋势;null(无后端源)= 卡片显示空态 */
-  series?: WeekSeries | null;
+  series?: ServerSeries | null;
+  /** 后端今日 24 小时分桶(饮水曲线用);null(无后端源)= 曲线回退前端现算 */
+  daySeries?: ServerSeries | null;
   /** 后端历史战报(逐日回看);null(无后端源)= 卡片显示空态 */
   history?: ServerHistory | null;
   /** 后端脾气变化史(逐日长期性格);null(无后端源)= 卡片显示空态 */
@@ -95,7 +98,7 @@ export function Dashboard({
         <PowerPanel />
       </section>
       <DrinkBuckets events={events} />
-      <DrinkChart events={events} />
+      <DrinkChart events={events} daySeries={daySeries} />
       <TempChart events={events} />
       <WeekTrend series={series ?? null} goal={g} />
       <HistoryCard history={history ?? null} />

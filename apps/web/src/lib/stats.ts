@@ -79,7 +79,11 @@ export function progress(intakeMl: number, goal = DAILY_GOAL_ML): number {
   return Math.max(0, Math.min(1, intakeMl / goal));
 }
 
-/** 按小时把饮水事件分桶,给柱状图用 */
+/**
+ * 按小时把饮水事件分桶 —— **离线回退**版(纯模拟器 / mock 源,没有后端分桶时)。
+ * 有后端时用 `hourlyFromSeries`(整天 24 桶),别用这个:云模式只收得到连上之后的
+ * 事件,这里会把今天早些时候的喝水量算漏(S6 收窄 stats 职责的那一半)。
+ */
 export function hourlyIntake(events: CupEvent[], now = Date.now()): number[] {
   const buckets = new Array(24).fill(0) as number[];
   for (const e of events) {
@@ -88,6 +92,30 @@ export function hourlyIntake(events: CupEvent[], now = Date.now()): number[] {
     buckets[h] = (buckets[h] ?? 0) + (e.amount_ml ?? 0);
   }
   return buckets;
+}
+
+/**
+ * 后端 `series?range=day` 的 24 桶 → 给柱状图用的 `number[]`(取 drank_ml)。
+ * 桶数不是 24(或后端回别的 range)时返回 null,让调用方回退 `hourlyIntake`
+ * —— 宁可自己现算,也不拿一份形状可疑的桶去画。
+ */
+export function hourlyFromSeries(
+  series: { range: string; buckets: readonly { drank_ml: number }[] } | null,
+): number[] | null {
+  if (!series || series.range !== 'day' || series.buckets.length !== 24) return null;
+  return series.buckets.map((b) => b.drank_ml);
+}
+
+/**
+ * 饮水曲线该用哪份桶 —— **有后端分桶就用它,否则前端现算**。
+ * 这正是一条策略,抽成纯函数好测(逻辑与渲染分离,不必渲染组件)。
+ */
+export function intakeBuckets(
+  events: CupEvent[],
+  daySeries: { range: string; buckets: readonly { drank_ml: number }[] } | null,
+  now = Date.now(),
+): number[] {
+  return hourlyFromSeries(daySeries) ?? hourlyIntake(events, now);
 }
 
 export interface CupSnapshot {

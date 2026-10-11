@@ -1,5 +1,10 @@
 /** 看板通用小组件:卡片 / 数字 / 标签 / 按钮 / 输入框。都走主题 token,不写死颜色。 */
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
+import type {
+  ButtonHTMLAttributes,
+  InputHTMLAttributes,
+  ReactNode,
+  TextareaHTMLAttributes,
+} from 'react';
 
 export function Card({
   title,
@@ -113,6 +118,19 @@ export function TextField({
   return (
     <input
       className={`min-w-0 flex-1 rounded-full bg-white/70 px-3.5 py-1.5 text-sm text-cup-ink outline-none ring-1 ring-cup-veil placeholder:text-cup-ink-soft/70 focus:ring-cup-aqua ${className}`}
+      {...rest}
+    />
+  );
+}
+
+/** 多行输入 —— 语气 / 台词这类自由文本用(#73 投稿表单)。圆角方框,与 TextField 同皮。 */
+export function TextArea({
+  className = '',
+  ...rest
+}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={`min-w-0 w-full rounded-2xl bg-white/70 px-3.5 py-2 text-sm text-cup-ink outline-none ring-1 ring-cup-veil placeholder:text-cup-ink-soft/70 focus:ring-cup-aqua ${className}`}
       {...rest}
     />
   );

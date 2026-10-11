@@ -20,9 +20,10 @@ import type {
   ServerHistory,
   ServerPersonalityHistory,
   ServerReport,
+  ServerSeries,
   ServerToday,
   SetGoalFn,
-  WeekSeries,
+  SocialApi,
 } from './source.ts';
 import type { CupEvent } from '@cup/contract';
 import { DAILY_GOAL_ML } from '../lib/stats.ts';
@@ -48,7 +49,9 @@ export interface CupData {
   /** 杯子主动搭话的滚动列表(仅 CloudSource 会推);无后端源时为空 */
   proactive: ProactiveMessage[];
   /** 近 7 天趋势(仅 CloudSource 会给);无后端源时 null,趋势卡显示空态 */
-  series: WeekSeries | null;
+  series: ServerSeries | null;
+  /** 今日 24 小时分桶(仅 CloudSource 会给);无后端源时 null,曲线回退前端现算 */
+  daySeries: ServerSeries | null;
   /** 历史战报(仅 CloudSource 会给);无后端源时 null,回看卡显示空态 */
   history: ServerHistory | null;
   /** 脾气变化史(仅 CloudSource 会给);无后端源时 null,养成卡显示空态 */
@@ -59,6 +62,11 @@ export interface CupData {
   goal: number;
   /** 改每日目标;不支持写目标的源(纯模拟器)时为 null */
   setGoal: SetGoalFn | null;
+  /**
+   * 多用户 / 市场 / 社交面(#72/#73/#74);只有云源实现 —— 模拟器 / mock 源为 null,
+   * 卡片据此显示"需连后端"。这些是用户点一下才动的动作,故直接透传源对象(不缓存状态)。
+   */
+  social: SocialApi | null;
 }
 
 export function useCupData(makeSource: () => DataSource = defaultSource): CupData {
@@ -68,7 +76,8 @@ export function useCupData(makeSource: () => DataSource = defaultSource): CupDat
   const [server, setServer] = useState<ServerToday | null>(null);
   const [report, setReport] = useState<ServerReport | null>(null);
   const [proactive, setProactive] = useState<ProactiveMessage[]>([]);
-  const [series, setSeries] = useState<WeekSeries | null>(null);
+  const [series, setSeries] = useState<ServerSeries | null>(null);
+  const [daySeries, setDaySeries] = useState<ServerSeries | null>(null);
   const [history, setHistory] = useState<ServerHistory | null>(null);
   const [personality, setPersonality] = useState<ServerPersonalityHistory | null>(null);
   /** 用户改过的目标(mock/离线时用);null = 没改过 → 回落到 server 或约定默认 */
@@ -94,6 +103,7 @@ export function useCupData(makeSource: () => DataSource = defaultSource): CupDat
       setProactive(proactiveRef.current);
     });
     const offSeries = source.on('series', setSeries);
+    const offDaySeries = source.on('daySeries', setDaySeries);
     const offHistory = source.on('history', setHistory);
     const offPersonality = source.on('personality', setPersonality);
     source.connect();
@@ -104,6 +114,7 @@ export function useCupData(makeSource: () => DataSource = defaultSource): CupDat
       offReport();
       offProactive();
       offSeries();
+      offDaySeries();
       offHistory();
       offPersonality();
       source.disconnect();
@@ -133,5 +144,8 @@ export function useCupData(makeSource: () => DataSource = defaultSource): CupDat
     };
   }, [source]);
 
-  return { frame, events, state, server, report, proactive, series, history, personality, ask, goal, setGoal };
+  // 社交 / 市场 / 管理面:有就有(云源),没有就是 null(模拟器 / mock)。直接透传源上的对象。
+  const social = useMemo<SocialApi | null>(() => source.social ?? null, [source]);
+
+  return { frame, events, state, server, report, proactive, series, daySeries, history, personality, ask, goal, setGoal, social };
 }

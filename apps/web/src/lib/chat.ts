@@ -1,9 +1,8 @@
 /**
  * 对话线的纯函数 —— 消息构造 / 守卫 / 裁剪 / 时间格式化。
  *
- * 全抽到这里是为了**可测**:web 没有 DOM 测试环境(见 CHAT-HANDOFF),
- * 渲染没法单测,但"该不该发、消息怎么造、列表怎么裁、占位怎么替换"
- * 这些逻辑能单测。ChatPanel 只负责把它们接到 React 状态上。
+ * 全抽到这里是为了**可测**:逻辑与渲染分离,"该不该发、消息怎么造、
+ * 列表怎么裁、占位怎么替换"能直接单测,不必渲染。ChatPanel 只负责把它们接到 React 状态上。
  */
 import type { AskFailure, ChatAnswer, ProactiveMessage } from '../data/source.ts';
 

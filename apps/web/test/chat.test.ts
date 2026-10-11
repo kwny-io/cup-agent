@@ -1,5 +1,5 @@
 /**
- * 对话线纯函数的回归 —— 只验逻辑,不碰渲染(web 无 DOM 测试环境)。
+ * 对话线纯函数的回归 —— 只验逻辑,不碰渲染(渲染交互另见 chat-panel.test.tsx)。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +17,7 @@ import {
   userMsg,
   type ChatMsg,
 } from '../src/lib/chat.ts';
-import { isChatAnswer, isProactiveMessage, isWeekSeries } from '../src/data/source.ts';
+import { isChatAnswer, isProactiveMessage, isServerSeries } from '../src/data/source.ts';
 import type { ProactiveMessage } from '../src/data/source.ts';
 
 test('canSubmit:空/纯空白/超长都不行,正常问句行', () => {
@@ -114,11 +114,11 @@ test('守卫:isProactiveMessage 认合法、拒半截', () => {
   assert.equal(isProactiveMessage(undefined), false);
 });
 
-test('守卫:isWeekSeries 认 7 桶、拒缺字段/非数组', () => {
+test('守卫:isServerSeries 认 7 桶、拒缺字段/非数组', () => {
   const bucket = { label: '10-09', ts: 1, drank_ml: 240, refill_ml: 0, temp_avg_c: null, last_volume_ml: null };
-  assert.equal(isWeekSeries({ cup_id: 'c', range: 'week', buckets: [bucket] }), true);
-  assert.equal(isWeekSeries({ buckets: [{ label: 'x', ts: 1 }] }), false); // 缺 drank_ml
-  assert.equal(isWeekSeries({ buckets: [{ label: 1, ts: 1, drank_ml: 0 }] }), false); // label 非字符串
-  assert.equal(isWeekSeries({ buckets: {} }), false); // 非数组
-  assert.equal(isWeekSeries(null), false);
+  assert.equal(isServerSeries({ cup_id: 'c', range: 'week', buckets: [bucket] }), true);
+  assert.equal(isServerSeries({ buckets: [{ label: 'x', ts: 1 }] }), false); // 缺 drank_ml
+  assert.equal(isServerSeries({ buckets: [{ label: 1, ts: 1, drank_ml: 0 }] }), false); // label 非字符串
+  assert.equal(isServerSeries({ buckets: {} }), false); // 非数组
+  assert.equal(isServerSeries(null), false);
 });

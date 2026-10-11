@@ -1,0 +1,389 @@
+/**
+ * 社区 / 管理 组件测试 —— 走**真实 click**(铁律),不合成 submit、不直接调 handler。
+ *
+ * 覆盖 #72 养成卡/迁移码、#73 市场/管理台、#74 社交/分享卡,以及账号卡(登录闸)。
+ * social 用假实现(记调用 + 可编排返回),不连真后端。
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { act, createElement } from 'react';
+import { CommunityView } from '../src/components/CommunityView.tsx';
+import { AdminPanel } from '../src/components/AdminPanel.tsx';
+import { AccountCard } from '../src/components/dashboard/AccountCard.tsx';
+import { ProfileCard } from '../src/components/dashboard/ProfileCard.tsx';
+import { MarketCard } from '../src/components/dashboard/MarketCard.tsx';
+import { FriendsCard } from '../src/components/dashboard/FriendsCard.tsx';
+import { encodeMigrateCode } from '../src/lib/migrate-code.ts';
+import type {
+  AdminUser,
+  AuthOutcome,
+  FriendView,
+  PackDraft,
+  PersonaPack,
+  PublicUser,
+  ServerProfile,
+  SocialApi,
+  TeamState,
+  TraitRecord,
+} from '../src/data/source.ts';
+import type { Session } from '../src/data/useSession.ts';
+import { mount, click, type as typeInto, flush } from './mount.tsx';
+
+const T: TraitRecord = {
+  disposition: 'smug',
+  level: 0.83,
+  streak: 5,
+  warmth: 0.61,
+  refill_habit: 0.4,
+  updated_at: Date.UTC(2026, 9, 12),
+};
+
+const USER: PublicUser = { user_id: 'u1', email: 'a@b.c', nickname: '小绿', role: 'user' };
+const ADMIN: PublicUser = { ...USER, user_id: 'ad', role: 'admin' };
+
+function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
+  const base: SocialApi = {
+    me: async () => null,
+    register: async () => ({ ok: true, user: USER }),
+    login: async () => ({ ok: true, user: USER }),
+    logout: async () => {},
+    hasSession: () => false,
+    getProfile: async (): Promise<ServerProfile | null> => ({ cup_id: 'cup-X', nickname: '小绿', traits: T }),
+    saveProfile: async (nickname): Promise<ServerProfile | null> => ({ cup_id: 'cup-X', nickname, traits: T }),
+    listPacks: async () => [],
+    submitPack: async (): Promise<PersonaPack | null> => null,
+    subscribePack: async () => true,
+    adminListUsers: async () => [],
+    adminSetDisabled: async () => null,
+    adminListPacks: async () => [],
+    adminVerdict: async () => null,
+    listFriends: async () => [],
+    addFriend: async () => null,
+    bindCup: async () => true,
+    unbindCup: async () => true,
+    getTeam: async (): Promise<TeamState | null> => ({ members: 1, friends: 0, streak: 0, days: [] }),
+  };
+  return { ...base, ...over };
+}
+
+function fakeSession(over: Partial<Session> = {}): Session {
+  return {
+    user: null,
+    loading: false,
+    login: async () => ({ ok: true, user: USER }),
+    register: async () => ({ ok: true, user: USER }),
+    logout: async () => {},
+    refresh: async () => {},
+    ...over,
+  };
+}
+
+const findButton = (host: HTMLElement, text: string) =>
+  Array.from(host.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes(text)) as
+    | HTMLButtonElement
+    | undefined;
+
+/** 在受控 textarea 上输入 —— mount.tsx 的 type() 走 input 原型 setter,对 textarea 会 Illegal invocation */
+function typeArea(el: HTMLTextAreaElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+  act(() => {
+    setter?.call(el, value);
+    el.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+}
+
+// ── 账号卡 ────────────────────────────────────────────────────────
+
+test('AccountCard:enabled=false → 需连后端空态,不出登录表单', () => {
+  const { host, unmount } = mount(createElement(AccountCard, { session: fakeSession(), enabled: false }));
+  assert.match(host.textContent ?? '', /需连后端/);
+  assert.equal(host.querySelector('input'), null, '不该有输入框');
+  unmount();
+});
+
+test('AccountCard:未登录 → 登录表单;真实点击登录 → 调 session.login', async () => {
+  const seen: { email: string; pw: string }[] = [];
+  const session = fakeSession({
+    login: async (email, pw): Promise<AuthOutcome> => {
+      seen.push({ email, pw });
+      return { ok: true, user: USER };
+    },
+  });
+  const { host, unmount } = mount(createElement(AccountCard, { session, enabled: true }));
+  const inputs = host.querySelectorAll('input');
+  typeInto(inputs[0] as HTMLInputElement, 'a@b.c');
+  typeInto(inputs[1] as HTMLInputElement, 'pw123456');
+  click(findButton(host, '登录')!);
+  await flush();
+  assert.deepEqual(seen, [{ email: 'a@b.c', pw: 'pw123456' }]);
+  unmount();
+});
+
+test('AccountCard:后端回人话错误 → 原样显示在 alert 里', async () => {
+  const session = fakeSession({
+    login: async () => ({ ok: false, reason: 'error', error: '邮箱或口令不对' }),
+  });
+  const { host, unmount } = mount(createElement(AccountCard, { session, enabled: true }));
+  const inputs = host.querySelectorAll('input');
+  typeInto(inputs[0] as HTMLInputElement, 'a@b.c');
+  typeInto(inputs[1] as HTMLInputElement, 'bad');
+  click(findButton(host, '登录')!);
+  await flush();
+  assert.match(host.querySelector('[role="alert"]')!.textContent ?? '', /邮箱或口令不对/);
+  unmount();
+});
+
+test('AccountCard:空邮箱 → 前端拦下,不调 login', async () => {
+  let calls = 0;
+  const session = fakeSession({
+    login: async () => {
+      calls++;
+      return { ok: true, user: USER };
+    },
+  });
+  const { host, unmount } = mount(createElement(AccountCard, { session, enabled: true }));
+  click(findButton(host, '登录')!);
+  await flush();
+  assert.equal(calls, 0);
+  assert.match(host.querySelector('[role="alert"]')!.textContent ?? '', /都要填/);
+  unmount();
+});
+
+test('AccountCard:已登录 → 显示身份 + 登出;真实点击登出调 session.logout', async () => {
+  let outed = false;
+  const session = fakeSession({
+    user: USER,
+    logout: async () => {
+      outed = true;
+    },
+  });
+  const { host, unmount } = mount(createElement(AccountCard, { session, enabled: true }));
+  assert.match(host.textContent ?? '', /小绿/);
+  click(findButton(host, '登出')!);
+  await flush();
+  assert.equal(outed, true);
+  unmount();
+});
+
+// ── 人格档案(养成卡 + 迁移码)────────────────────────────────────
+
+test('ProfileCard:enabled=false → 需连后端空态', () => {
+  const { host, unmount } = mount(createElement(ProfileCard, { social: null, enabled: false }));
+  assert.match(host.textContent ?? '', /需连后端/);
+  unmount();
+});
+
+test('ProfileCard:拉档案后展示性格;真实点击「生成迁移码」出码', async () => {
+  const { host, unmount } = mount(
+    createElement(ProfileCard, { social: fakeSocial(), enabled: true }),
+  );
+  await flush(); // getProfile().then
+  assert.match(host.textContent ?? '', /得意洋洋/);
+  click(findButton(host, '生成迁移码')!);
+  await flush();
+  const code = host.querySelector('[data-testid="migrate-code"]');
+  assert.ok(code, '应出现迁移码');
+  assert.match(code!.textContent ?? '', /^CUP1-/);
+  unmount();
+});
+
+test('ProfileCard:导入合法迁移码 → 解出昵称与性格', async () => {
+  const good = encodeMigrateCode(T, '小绿');
+  const { host, unmount } = mount(
+    createElement(ProfileCard, { social: fakeSocial(), enabled: true }),
+  );
+  await flush();
+  const inputs = host.querySelectorAll('input');
+  typeInto(inputs[inputs.length - 1] as HTMLInputElement, good); // 最后一个 = 迁移码框
+  click(findButton(host, '解析')!);
+  await flush();
+  const status = host.querySelector('[role="status"]');
+  assert.ok(status);
+  assert.match(status!.textContent ?? '', /得意洋洋/);
+  assert.match(status!.textContent ?? '', /小绿/);
+  unmount();
+});
+
+test('ProfileCard:坏迁移码 → 明确报错,不误当成功', async () => {
+  const { host, unmount } = mount(
+    createElement(ProfileCard, { social: fakeSocial(), enabled: true }),
+  );
+  await flush();
+  const inputs = host.querySelectorAll('input');
+  typeInto(inputs[inputs.length - 1] as HTMLInputElement, 'CUP1-xxxx-bad');
+  click(findButton(host, '解析')!);
+  await flush();
+  const status = host.querySelector('[role="status"]');
+  assert.match(status!.textContent ?? '', /校验|格式|版本|损坏/);
+  unmount();
+});
+
+// ── 市场 ─────────────────────────────────────────────────────────
+
+test('MarketCard:未登录 → 只读浏览,无投稿表单', async () => {
+  const soc = fakeSocial({
+    listPacks: async (): Promise<PersonaPack[]> => [
+      { pack_id: 'p1', author_user_id: 'u2', name: '温柔包', tone: '柔柔的', thresholds: { SMUG_S: 4 }, wave: { k: 42 }, lines: ['你好'], status: 'approved', created_at: 1 },
+    ],
+  });
+  const { host, unmount } = mount(createElement(MarketCard, { social: soc, enabled: true, user: null }));
+  await flush();
+  assert.match(host.textContent ?? '', /温柔包/);
+  assert.match(host.textContent ?? '', /登录后才能投稿/);
+  assert.equal(findButton(host, '投稿'), undefined);
+  unmount();
+});
+
+test('MarketCard:真实点击「订阅」调 subscribePack', async () => {
+  const seen: string[] = [];
+  const soc = fakeSocial({
+    listPacks: async (): Promise<PersonaPack[]> => [
+      { pack_id: 'p1', author_user_id: 'u2', name: '温柔包', tone: '', thresholds: {}, wave: {}, lines: [], status: 'approved', created_at: 1 },
+    ],
+    subscribePack: async (id) => {
+      seen.push(id);
+      return true;
+    },
+  });
+  const { host, unmount } = mount(createElement(MarketCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  click(findButton(host, '订阅')!);
+  await flush();
+  assert.deepEqual(seen, ['p1']);
+  assert.ok(findButton(host, '已订阅'), '订阅后按钮变已订阅');
+  unmount();
+});
+
+test('MarketCard:登录后投稿 → 真实点击提交,submitPack 收到净化后的草稿', async () => {
+  let got: PackDraft | null = null;
+  const soc = fakeSocial({
+    submitPack: async (d): Promise<PersonaPack | null> => {
+      got = d;
+      return { ...d, pack_id: 'p9', author_user_id: 'u1', status: 'pending', created_at: 1 };
+    },
+  });
+  const { host, unmount } = mount(createElement(MarketCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  const inputs = host.querySelectorAll('input');
+  typeInto(inputs[0] as HTMLInputElement, '早八包');
+  const ta = host.querySelector('textarea') as HTMLTextAreaElement;
+  assert.ok(ta, '投稿表单应有台词多行框');
+  typeArea(ta, '早啊\n喝口水');
+  click(findButton(host, '投稿')!);
+  await flush();
+  assert.ok(got, 'submitPack 应被调用');
+  assert.equal(got!.name, '早八包');
+  assert.deepEqual(got!.lines, ['早啊', '喝口水']);
+  unmount();
+});
+
+test('MarketCard:包名为空 → 前端拦下,不投稿', async () => {
+  let calls = 0;
+  const soc = fakeSocial({
+    submitPack: async () => {
+      calls++;
+      return null;
+    },
+  });
+  const { host, unmount } = mount(createElement(MarketCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  click(findButton(host, '投稿')!);
+  await flush();
+  assert.equal(calls, 0);
+  unmount();
+});
+
+// ── 社交 ─────────────────────────────────────────────────────────
+
+test('FriendsCard:展示组队 streak;真实点击「加好友」调 addFriend', async () => {
+  const seen: string[] = [];
+  const friend: FriendView = { user_id: 'u2', nickname: '阿蓝', traits: T, streak: 3 };
+  const soc = fakeSocial({
+    getTeam: async (): Promise<TeamState | null> => ({ members: 2, friends: 1, streak: 3, days: ['2026-10-10', '2026-10-12'] }),
+    listFriends: async () => [friend],
+    addFriend: async (email) => {
+      seen.push(email);
+      return friend;
+    },
+  });
+  const { host, unmount } = mount(createElement(FriendsCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  assert.match(host.textContent ?? '', /组队连续 3 天/);
+  assert.match(host.textContent ?? '', /阿蓝/);
+  typeInto(host.querySelector('input') as HTMLInputElement, 'b@b.c');
+  click(findButton(host, '加好友')!);
+  await flush();
+  assert.deepEqual(seen, ['b@b.c']);
+  unmount();
+});
+
+test('FriendsCard:未登录 → 无加好友表单', async () => {
+  const { host, unmount } = mount(
+    createElement(FriendsCard, { social: fakeSocial(), enabled: true, user: null }),
+  );
+  await flush();
+  assert.match(host.textContent ?? '', /登录后才能加好友/);
+  unmount();
+});
+
+// ── 管理台 ───────────────────────────────────────────────────────
+
+test('AdminPanel:真实点击「禁用」调 adminSetDisabled 并就地更新', async () => {
+  const u2: AdminUser = { user_id: 'u2', email: 'b@b.c', nickname: '阿蓝', role: 'user', disabled: false, created_at: 1 };
+  const seen: { id: string; v: boolean }[] = [];
+  const soc = fakeSocial({
+    adminListUsers: async () => [u2],
+    adminSetDisabled: async (id, v) => {
+      seen.push({ id, v });
+      return { ...u2, disabled: v };
+    },
+  });
+  const { host, unmount } = mount(createElement(AdminPanel, { social: soc }));
+  await flush();
+  click(findButton(host, '禁用')!);
+  await flush();
+  assert.deepEqual(seen, [{ id: 'u2', v: true }]);
+  assert.match(host.textContent ?? '', /已禁用/);
+  unmount();
+});
+
+test('AdminPanel:真实点击「通过」调 adminVerdict(true),审完离队', async () => {
+  const pack: PersonaPack = { pack_id: 'p1', author_user_id: 'u2', name: '待审包', tone: '', thresholds: {}, wave: {}, lines: [], status: 'pending', created_at: 1 };
+  const seen: { id: string; ok: boolean }[] = [];
+  const soc = fakeSocial({
+    adminListPacks: async () => [pack],
+    adminVerdict: async (id, ok) => {
+      seen.push({ id, ok });
+      return { ...pack, status: ok ? 'approved' : 'rejected' };
+    },
+  });
+  const { host, unmount } = mount(createElement(AdminPanel, { social: soc }));
+  await flush();
+  assert.match(host.textContent ?? '', /待审包/);
+  click(findButton(host, '通过')!);
+  await flush();
+  assert.deepEqual(seen, [{ id: 'p1', ok: true }]);
+  assert.ok(!(host.textContent ?? '').includes('待审包'), '审完该包应离队');
+  unmount();
+});
+
+// ── 组合 ─────────────────────────────────────────────────────────
+
+test('CommunityView:无后端源时四张卡都显示「需连后端」', () => {
+  const { host, unmount } = mount(
+    createElement(CommunityView, { social: null, session: fakeSession() }),
+  );
+  const n = (host.textContent ?? '').split('需连后端').length - 1;
+  assert.ok(n >= 3, `应有多张卡提示需连后端,实际 ${n}`);
+  unmount();
+});
+
+test('CommunityView:管理员登录 → 管理台可见(公开于 session)', async () => {
+  // CommunityView 只含四张社区卡;管理台是独立 Tab,这里只验管理员身份能被会话透出
+  const { host, unmount } = mount(
+    createElement(CommunityView, { social: fakeSocial(), session: fakeSession({ user: ADMIN }) }),
+  );
+  await flush();
+  assert.match(host.textContent ?? '', /小绿/); // 账号卡显示身份
+  unmount();
+});

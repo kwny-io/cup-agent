@@ -24,7 +24,7 @@ import {
   isProactiveMessage,
   isServerHistory,
   isServerPersonalityHistory,
-  isWeekSeries,
+  isServerSeries,
   type AskResult,
   type DataSource,
   type GoalResult,
@@ -34,9 +34,11 @@ import {
   type ServerPersonalityHistory,
   type ServerReport,
   type ServerToday,
-  type WeekSeries,
+  type ServerSeries,
+  type SocialApi,
 } from './source.ts';
 import { postJson, putJson, type HttpOutcome } from './http.ts';
+import { CloudSocial } from './social.ts';
 
 export interface CloudOptions {
   /** 后端 API 根,如 http://localhost:8788 */
@@ -82,6 +84,11 @@ export class CloudSource implements DataSource {
   private askTimeoutMs: number;
   /** 写端点鉴权密钥(秘密:不落盘、不打日志、不进 URL) */
   private apiKey: string;
+  /**
+   * 多用户 / 市场 / 社交面(#72/#73/#74)—— 拉式 REST,与 WS 遥测无关,
+   * 故拆成独立小对象(见 ./social.ts)。模拟器 / mock 源没有这块。
+   */
+  readonly social: SocialApi;
 
   private ws: WebSocket | null = null;
   private em = new Emitter();
@@ -104,6 +111,7 @@ export class CloudSource implements DataSource {
     this.reportMs = opts.reportMs ?? 60_000;
     this.askTimeoutMs = opts.askTimeoutMs ?? 15_000;
     this.apiKey = opts.apiKey ?? '';
+    this.social = new CloudSocial({ apiBase: this.apiBase, cupId: this.cupId, apiKey: this.apiKey });
   }
 
   connect(): void {
@@ -122,7 +130,7 @@ export class CloudSource implements DataSource {
     this.em.emit('state', 'closed');
   }
 
-  on<K extends 'frame' | 'state' | 'server' | 'report' | 'proactive' | 'series' | 'history' | 'personality'>(
+  on<K extends 'frame' | 'state' | 'server' | 'report' | 'proactive' | 'series' | 'daySeries' | 'history' | 'personality'>(
     evt: K,
     cb: Parameters<DataSource['on']>[1],
   ): () => void {
@@ -297,6 +305,7 @@ export class CloudSource implements DataSource {
     void this.fetchTodayEvents();
     void this.fetchReport();
     void this.fetchSeries();
+    void this.fetchDaySeries();
     void this.fetchHistory();
     void this.fetchPersonality();
   }
@@ -319,6 +328,8 @@ export class CloudSource implements DataSource {
       // 趋势卡里"今天"那根柱子会随当天饮水增长 —— 只拉一次会让它整会话冻结,
       // 与旁边实时更新的"今日"面板自相矛盾。搭战报的同档低频一起刷。
       void this.fetchSeries();
+      // 饮水曲线今日那根时柱同理:会随当天增长,不刷就冻结(同档低频)
+      void this.fetchDaySeries();
       // 历史里"今天"那条(喝了多少/headline)同样会随当天增长,同档低频刷
       void this.fetchHistory();
       // 脾气变化史末日的 disposition 随今天是否达标而变,同档低频刷
@@ -354,10 +365,22 @@ export class CloudSource implements DataSource {
    * 所以跟 today/report 一样走 REST 补齐。连上拉一次即可(按天变,不必高频轮询)。
    */
   private async fetchSeries(): Promise<void> {
-    const s = await this.getJson<WeekSeries>(
+    const s = await this.getJson<ServerSeries>(
       `/cups/${encodeURIComponent(this.cupId)}/series?range=week`,
     );
-    if (isWeekSeries(s)) this.em.emit('series', s);
+    if (isServerSeries(s)) this.em.emit('series', s);
+  }
+
+  /**
+   * 拉今日 24 小时分桶(饮水曲线用)。云模式只收得到"连上之后"的 WS 事件,
+   * 今天早些时候的喝水量拿不到 —— 曲线若自己现算会少半截。后端这份是**整天**分桶,
+   * 故曲线以后端为准;没有后端(mock / 纯模拟器)时组件回落 `hourlyIntake`。
+   */
+  private async fetchDaySeries(): Promise<void> {
+    const s = await this.getJson<ServerSeries>(
+      `/cups/${encodeURIComponent(this.cupId)}/series?range=day`,
+    );
+    if (isServerSeries(s)) this.em.emit('daySeries', s);
   }
 
   /**
