@@ -15,6 +15,7 @@ import type {
   AdminUser,
   AskFailure,
   AuthOutcome,
+  BindOutcome,
   CupLlmDraft,
   CupLlmPublic,
   FriendView,
@@ -306,16 +307,25 @@ export class CloudSocial implements SocialApi {
     return (r.data as { friend?: FriendView }).friend ?? null;
   }
 
-  async bindCup(cupId: string, claimCode?: string): Promise<boolean> {
+  async getBoundCup(): Promise<string | null> {
+    const r = await this.req('GET', '/social/cup');
+    if (!r.ok) return null;
+    const id = (r.data as { cup_id?: unknown }).cup_id;
+    return typeof id === 'string' && id !== '' ? id : null;
+  }
+
+  async bindCup(cupId: string, claimCode?: string): Promise<BindOutcome> {
     const body: { cup_id: string; claim_code?: string } = { cup_id: cupId };
     if (claimCode !== undefined && claimCode !== '') body.claim_code = claimCode;
     const r = await this.req('POST', '/social/cup', body);
-    return r.ok;
+    if (r.ok) return { ok: true };
+    // 403 的「杯子绑定凭证无效」要能原样显示 —— 故把后端 error 带出去,不吞成 boolean
+    return { ok: false, ...(this.errorOf(r) !== undefined ? { error: this.errorOf(r)! } : {}) };
   }
 
-  async unbindCup(): Promise<boolean> {
+  async unbindCup(): Promise<BindOutcome> {
     const r = await this.req('DELETE', '/social/cup');
-    return r.ok;
+    return r.ok ? { ok: true } : { ok: false, ...(this.errorOf(r) !== undefined ? { error: this.errorOf(r)! } : {}) };
   }
 
   async getTeam(): Promise<TeamState | null> {

@@ -12,6 +12,7 @@ import { AdminPanel } from '../src/components/AdminPanel.tsx';
 import { AccountCard } from '../src/components/dashboard/AccountCard.tsx';
 import { ProfileCard } from '../src/components/dashboard/ProfileCard.tsx';
 import { LlmCard } from '../src/components/dashboard/LlmCard.tsx';
+import { BindCard } from '../src/components/dashboard/BindCard.tsx';
 import { MarketCard } from '../src/components/dashboard/MarketCard.tsx';
 import { FriendsCard } from '../src/components/dashboard/FriendsCard.tsx';
 import { encodeMigrateCode } from '../src/lib/migrate-code.ts';
@@ -65,8 +66,9 @@ function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
     adminVerdict: async () => null,
     listFriends: async () => [],
     addFriend: async () => null,
-    bindCup: async () => true,
-    unbindCup: async () => true,
+    getBoundCup: async () => null,
+    bindCup: async () => ({ ok: true }),
+    unbindCup: async () => ({ ok: true }),
     getTeam: async (): Promise<TeamState | null> => ({ members: 1, friends: 0, streak: 0, days: [] }),
   };
   return { ...base, ...over };
@@ -338,6 +340,92 @@ test('LlmCard:模型名清空 → 前端拦下,不提交', async () => {
   await flush();
   assert.equal(calls, 0);
   assert.match(host.querySelector('[role="alert"]')!.textContent ?? '', /不能为空/);
+  unmount();
+});
+
+// ── 绑定杯子(可信绑定 UI)──────────────────────────────────────
+
+test('BindCard:enabled=false → 需连后端空态', () => {
+  const { host, unmount } = mount(createElement(BindCard, { social: null, enabled: false, user: null }));
+  assert.match(host.textContent ?? '', /需连后端/);
+  unmount();
+});
+
+test('BindCard:未登录 → 提示先登录,不出表单', () => {
+  const { host, unmount } = mount(
+    createElement(BindCard, { social: fakeSocial(), enabled: true, user: null }),
+  );
+  assert.match(host.textContent ?? '', /登录后/);
+  assert.equal(host.querySelector('input'), null, '未登录不该有输入框');
+  unmount();
+});
+
+test('BindCard:未绑定 → 真实点击「绑定」提交 cup_id + 绑定码', async () => {
+  const seen: { cup: string; code?: string }[] = [];
+  const soc = fakeSocial({
+    bindCup: async (cupId, claimCode) => {
+      seen.push({ cup: cupId, ...(claimCode !== undefined ? { code: claimCode } : {}) });
+      return { ok: true };
+    },
+  });
+  const { host, unmount } = mount(createElement(BindCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  typeInto(host.querySelector('input[aria-label="杯子编号"]') as HTMLInputElement, 'cup-001');
+  typeInto(host.querySelector('input[aria-label="绑定码"]') as HTMLInputElement, 'JH2RFDZZ');
+  click(findButton(host, '绑定')!);
+  await flush();
+  assert.deepEqual(seen, [{ cup: 'cup-001', code: 'JH2RFDZZ' }]);
+  assert.match(host.textContent ?? '', /当前绑定/); // 成功 → 切到已绑视图
+  unmount();
+});
+
+test('BindCard:403 → 后端人话原样显示(不吞成通用文案)', async () => {
+  const soc = fakeSocial({
+    bindCup: async () => ({ ok: false, error: '杯子绑定凭证无效' }),
+  });
+  const { host, unmount } = mount(createElement(BindCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  typeInto(host.querySelector('input[aria-label="杯子编号"]') as HTMLInputElement, 'cup-001');
+  typeInto(host.querySelector('input[aria-label="绑定码"]') as HTMLInputElement, 'WRONG');
+  click(findButton(host, '绑定')!);
+  await flush();
+  assert.match(host.querySelector('[role="alert"]')!.textContent ?? '', /杯子绑定凭证无效/);
+  unmount();
+});
+
+test('BindCard:编号空 → 前端拦下,不提交', async () => {
+  let calls = 0;
+  const soc = fakeSocial({
+    bindCup: async () => {
+      calls++;
+      return { ok: true };
+    },
+  });
+  const { host, unmount } = mount(createElement(BindCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  click(findButton(host, '绑定')!);
+  await flush();
+  assert.equal(calls, 0);
+  assert.match(host.querySelector('[role="alert"]')!.textContent ?? '', /要填/);
+  unmount();
+});
+
+test('BindCard:已绑定 → 显示当前杯 + 真实点击「解绑」', async () => {
+  let unbound = false;
+  const soc = fakeSocial({
+    getBoundCup: async () => 'cup-001',
+    unbindCup: async () => {
+      unbound = true;
+      return { ok: true };
+    },
+  });
+  const { host, unmount } = mount(createElement(BindCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  assert.match(host.textContent ?? '', /cup-001/);
+  click(findButton(host, '解绑')!);
+  await flush();
+  assert.equal(unbound, true);
+  assert.match(host.textContent ?? '', /未绑定/);
   unmount();
 });
 

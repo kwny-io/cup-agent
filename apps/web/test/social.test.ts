@@ -208,8 +208,8 @@ test('unbindCup:用 DELETE;bindCup:POST 带 cup_id', async () => {
   const impl = router([{ match: (u) => u.includes('/social/cup'), json: { cup_id: null } }], cap);
   const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
 
-  await s.bindCup('cup-Y');
-  await s.unbindCup();
+  assert.deepEqual(await s.bindCup('cup-Y'), { ok: true });
+  assert.deepEqual(await s.unbindCup(), { ok: true });
   assert.equal(cap[0]?.method, 'POST');
   assert.equal(cap[0]?.body, JSON.stringify({ cup_id: 'cup-Y' }));
   assert.equal(cap[1]?.method, 'DELETE');
@@ -224,6 +224,26 @@ test('bindCup:给了 claim_code 才带上(可信绑定开关开时用)', async (
   assert.equal(cap[0]?.body, JSON.stringify({ cup_id: 'cup-Y', claim_code: 'ABCD-2345' }));
   await s.bindCup('cup-Z', ''); // 空串 = 不带字段(与开关关时的旧形状一致)
   assert.equal(cap[1]?.body, JSON.stringify({ cup_id: 'cup-Z' }));
+});
+
+test('bindCup:403 → {ok:false, error:后端人话}(开关开的错码不吞成 boolean)', async () => {
+  const impl = router([
+    { match: (u) => u.includes('/social/cup'), status: 403, json: { error: '杯子绑定凭证无效' } },
+  ]);
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.deepEqual(await s.bindCup('cup-Y', 'WRONG'), { ok: false, error: '杯子绑定凭证无效' });
+});
+
+test('getBoundCup:GET /social/cup → cup_id;空/缺 → null', async () => {
+  const cap: Cap[] = [];
+  const impl = router([{ match: (u) => u.includes('/social/cup'), json: { cup_id: 'cup-Y' } }], cap);
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.equal(await s.getBoundCup(), 'cup-Y');
+  assert.equal(cap[0]?.method, 'GET');
+
+  const impl2 = router([{ match: (u) => u.includes('/social/cup'), json: { cup_id: null } }]);
+  const s2 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl2, storage: memStorage() });
+  assert.equal(await s2.getBoundCup(), null);
 });
 
 test('addFriend / getTeam / listFriends:形状对不对', async () => {

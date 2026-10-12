@@ -566,6 +566,7 @@ async function socialFriendsRoute(
 }
 
 /**
+ * GET    /social/cup             → 200 { cup_id: string|null }(我绑的杯子;没绑 = null)
  * POST   /social/cup { cup_id } → 200 { cup_id }(绑定我的杯子,好友才看得到我的派生性格)
  * DELETE /social/cup             → 200 { cup_id: null }(解绑)
  */
@@ -578,6 +579,10 @@ async function socialCupBindRoute(
   if (!me) return;
   const method = req.method ?? 'GET';
 
+  if (method === 'GET') {
+    const acct = await deps.accounts!.accountById(me.user_id);
+    return send(res, 200, { cup_id: acct?.cup_id ?? null });
+  }
   if (method === 'DELETE') {
     await deps.accounts!.setCup(me.user_id, null);
     return send(res, 200, { cup_id: null });

@@ -260,6 +260,34 @@ test('social/cup:解绑后好友看不到 traits;cup_id 非法 → 400', async (
   }
 });
 
+test('GET /social/cup:未绑 → null;绑后 → 该杯;解绑 → 回到 null;未登录 → 401', async () => {
+  const { app, base } = await startApp();
+  try {
+    const bob = await reg(base, { email: 'bob@x.com', password: 'pw123456' });
+
+    assert.equal((await req(base, '/social/cup', 'GET', undefined)).status, 401, '未登录 401');
+
+    const before = (await (await req(base, '/social/cup', 'GET', undefined, bob.token)).json()) as {
+      cup_id: string | null;
+    };
+    assert.equal(before.cup_id, null, '没绑 → null');
+
+    await req(base, '/social/cup', 'POST', { cup_id: CUP_B }, bob.token);
+    const bound = (await (await req(base, '/social/cup', 'GET', undefined, bob.token)).json()) as {
+      cup_id: string | null;
+    };
+    assert.equal(bound.cup_id, CUP_B, '绑后读回该杯');
+
+    await req(base, '/social/cup', 'DELETE', undefined, bob.token);
+    const after = (await (await req(base, '/social/cup', 'GET', undefined, bob.token)).json()) as {
+      cup_id: string | null;
+    };
+    assert.equal(after.cup_id, null, '解绑 → 回 null');
+  } finally {
+    await app.close();
+  }
+});
+
 // ── 组队 streak 端点 ─────────────────────────────────────────────
 
 test('social/team:全员绑杯子 + 共同达标 → 组队 streak 正确', async () => {

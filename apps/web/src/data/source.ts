@@ -400,6 +400,13 @@ export type AuthOutcome =
   | { ok: false; reason: AskFailure; error?: string };
 
 /**
+ * 绑杯 / 解绑结果。为什么要带 error(而不是一个 boolean):
+ * 可信绑定开关开时,后端对缺码/错码一律回 403 `{error:'杯子绑定凭证无效'}` ——
+ * 前端要把这句**原样**显示给用户(否则用户不知道码错在哪)。boolean 会把它丢掉。
+ */
+export type BindOutcome = { ok: true } | { ok: false; error?: string };
+
+/**
  * 社交 / 市场 / 管理的拉式接口(#72/#73/#74)—— 挂在 DataSource 上的**可选**面。
  *
  * 为什么用**拉**而不是 DataSourceEvents 的**推**:这些是"用户点一下才动"的
@@ -440,9 +447,12 @@ export interface SocialApi {
   // ── 杯子社交(#74)──
   listFriends(): Promise<FriendView[]>;
   addFriend(email: string): Promise<FriendView | null>;
-  /** 绑定杯子;服务端开了可信绑定(--require-claim)时必须给设备上抄的一次性 claimCode */
-  bindCup(cupId: string, claimCode?: string): Promise<boolean>;
-  unbindCup(): Promise<boolean>;
+  /** 我当前绑的杯子;没绑 / 未登录 → null */
+  getBoundCup(): Promise<string | null>;
+  /** 绑定杯子;可信绑定开关(--require-claim)开时,缺/错码 → {ok:false, error:'杯子绑定凭证无效'} */
+  bindCup(cupId: string, claimCode?: string): Promise<BindOutcome>;
+  /** 解绑我的杯子(没绑也算成功)*/
+  unbindCup(): Promise<BindOutcome>;
   getTeam(): Promise<TeamState | null>;
 }
 

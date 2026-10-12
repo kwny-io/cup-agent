@@ -7,6 +7,7 @@
  * 数据从 props 进(与 Dashboard 同约定,不自己取数)。
  */
 import { AccountCard } from './dashboard/AccountCard.tsx';
+import { BindCard } from './dashboard/BindCard.tsx';
 import { ProfileCard } from './dashboard/ProfileCard.tsx';
 import { LlmCard } from './dashboard/LlmCard.tsx';
 import { MarketCard } from './dashboard/MarketCard.tsx';
@@ -19,6 +20,7 @@ export function CommunityView({ social, session }: { social: SocialApi | null; s
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
       <AccountCard session={session} enabled={enabled} />
+      <BindCard social={social} enabled={enabled} user={session.user} />
       <ProfileCard social={social} enabled={enabled} />
       <LlmCard social={social} enabled={enabled} user={session.user} />
       <MarketCard social={social} enabled={enabled} user={session.user} />
