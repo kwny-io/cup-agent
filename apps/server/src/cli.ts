@@ -133,6 +133,11 @@ function parseArgs(argv: string[]): Args {
         console.log('  --require-claim / CUP_REQUIRE_CLAIM=1  开启(默认关 → 绑定行为与从前一致)。');
         console.log('  CUP_CLAIM_PEPPER=<base64>  码哈希的 pepper;不设则由 dataDir/claim-pepper 落盘。');
         console.log('');
+        console.log('每杯模型配置(BYOK:登录后给自己那只杯配模型 + 填自己的 key):');
+        console.log('  GET|PUT|DELETE /cups/:id/llm   读写该杯模型(须登录会话 + 拥有该杯;key 密文落库、不回显)');
+        console.log('  CUP_LLM_ENC_KEY=<base64 32B>   key 的加密密钥;不设则由 dataDir/llm-enc-key 落盘。');
+        console.log('  配了自选模型的杯:/ask 改走账户鉴权(登录 + 拥有该杯)并用该杯模型;未配 → 旧路径不变。');
+        console.log('');
         console.log('人格档案 / 市场 / 社交(需登录会话:Authorization: Bearer <token>):');
         console.log('  GET|PUT /cups/:id/profile       人格档案(昵称 + 派生性格快照;#72)');
         console.log('  GET|POST /market/packs          浏览已上架 / 投稿人格包(#73)');
