@@ -282,3 +282,130 @@ test('真 broker:close() 后不再收;transports 真断开(不悬挂 handle)', a
   assert.equal(app.mqtt!.accepted(), 0, 'close 后不应再接收');
   await rig.dispose();
 });
+
+// ── 可信绑定 · 真链路(R18 设备端半 → 服务端半)────────────────────
+//
+// 上面 mqtt-adapter.test.ts 用 stub 验过 onHello 逻辑;claim.test.ts 用内存 store 验过
+// ClaimService;这里补**唯一没跑过的接缝**:固件形状的 hello 真经 broker → 适配器 onHello
+// → ClaimService 落库 → 开关开时凭该码 `POST /social/cup` 绑定。亦即"真机发上来的 hello,
+// 下游一行不改就能收"—— 且新加的 `cup_id/claim/issued_at` 字段**不碰冻结的契约**。
+
+test('真 broker:固件形 hello(带 claim)经真链路 → ClaimService 落库,契约零改动', async () => {
+  const rig = await startRig();
+  const logs: string[] = [];
+  const app = createApp({ mqttUrl: rig.url, log: (m) => logs.push(m) });
+  try {
+    await delay(200);
+    // 固件 mqtt_uplink.c 的 hello 形状:多出 cup_id/claim/issued_at,仍走 hello 旁路
+    rig.device.publish(
+      `dev/${LID}/up`,
+      JSON.stringify({ kind: 'hello', v: 1, cup_id: CUP_ID, claim: 'ABCD2345', issued_at: Date.now() }),
+      { qos: 1 },
+    );
+    await delay(250);
+
+    // 新字段没被当契约报文拒收(旁路在 UpstreamFrameSchema 之前)
+    assert.equal(app.mqtt!.rejected(), 0, 'hello 不应被拒收');
+    assert.equal(app.mqtt!.accepted(), 0, 'hello 不算上行帧');
+    assert.ok(logs.some((l) => l.includes('hello')), '应记 hello 日志');
+    // 码落库(存哈希),且 deviceId 取自 topic
+    const row = await app.accounts.claimByDevice(LID);
+    assert.ok(row, 'hello 里的 claim 应落库');
+    assert.equal(row!.cup_id, CUP_ID);
+    assert.notEqual(row!.claim_hash, 'ABCD2345', '存哈希不存明文');
+    assert.equal(row!.used_at, undefined, '未用');
+  } finally {
+    await app.close();
+    await rig.dispose();
+  }
+});
+
+test('真 broker:开关开 —— 设备报码 → 登录用户凭码绑定 200;无码/错码 403', async () => {
+  const rig = await startRig();
+  const app = createApp({ mqttUrl: rig.url, log: () => {}, allowUnauth: true, requireClaim: true });
+  try {
+    await delay(200);
+    // 设备(杯盖)在真链路上报码 —— 这条 claim 只有设备和服务器知道
+    rig.device.publish(
+      `dev/${LID}/up`,
+      JSON.stringify({ kind: 'hello', v: 1, cup_id: CUP_ID, claim: 'ABCD2345', issued_at: Date.now() }),
+      { qos: 1 },
+    );
+    await delay(250);
+    assert.ok(await app.accounts.claimByDevice(LID), 'claim 先落库');
+
+    const port = await app.listen(0);
+    const base = `http://127.0.0.1:${port}`;
+    // 注册一个用户(账号端点自校验口令,不受 requireClaim 影响)
+    const reg = await fetch(`${base}/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'bob@example.com', password: 'secret1', nickname: 'bob' }),
+    });
+    assert.equal(reg.status, 200, `注册应成功:${await reg.clone().text()}`);
+    const { token } = (await reg.json()) as { token: string };
+
+    const bind = (body: Record<string, unknown>): Promise<Response> =>
+      fetch(`${base}/social/cup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+    // 开关开:无码 / 错码一律 403(无 oracle)
+    assert.equal((await bind({ cup_id: CUP_ID })).status, 403, '开关开:无码 403');
+    assert.equal((await bind({ cup_id: CUP_ID, claim_code: 'WRONG111' })).status, 403, '错码 403');
+    // 真·设备码 → 200,绑定成立
+    const ok = await bind({ cup_id: CUP_ID, claim_code: 'ABCD2345' });
+    assert.equal(ok.status, 200, '对码 200');
+    assert.equal(((await ok.json()) as { cup_id: string }).cup_id, CUP_ID);
+    // 一次性:同码再绑 403
+    assert.equal((await bind({ cup_id: CUP_ID, claim_code: 'ABCD2345' })).status, 403, '用过即废');
+  } finally {
+    await app.close();
+    await rig.dispose();
+  }
+});
+
+test('真 broker:双形体 —— 底座报的码也能绑同一只杯(PK=device_id 不互踩)', async () => {
+  const rig = await startRig();
+  const app = createApp({ mqttUrl: rig.url, log: () => {}, allowUnauth: true, requireClaim: true });
+  try {
+    await delay(200);
+    // 杯盖与底座各在真链路报自己的码(同一 cup_id,topic device_id 不同)
+    rig.device.publish(
+      `dev/${LID}/up`,
+      JSON.stringify({ kind: 'hello', v: 1, cup_id: CUP_ID, claim: 'AAAA1111', issued_at: Date.now() }),
+      { qos: 1 },
+    );
+    rig.device.publish(
+      `dev/${BASE}/up`,
+      JSON.stringify({ kind: 'hello', v: 1, cup_id: CUP_ID, claim: 'BBBB2222', issued_at: Date.now() }),
+      { qos: 1 },
+    );
+    await delay(300);
+
+    const rows = await app.accounts.claimsByCup(CUP_ID);
+    assert.equal(rows.length, 2, '两具身体各一行(cup_id 作 PK 会互踩)');
+
+    const port = await app.listen(0);
+    const base = `http://127.0.0.1:${port}`;
+    const reg = await fetch(`${base}/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'amy@example.com', password: 'secret1', nickname: 'amy' }),
+    });
+    const { token } = (await reg.json()) as { token: string };
+
+    // 用户手上那具是底座 → 抄底座的码也能绑
+    const r = await fetch(`${base}/social/cup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ cup_id: CUP_ID, claim_code: 'BBBB2222' }),
+    });
+    assert.equal(r.status, 200, '底座码可绑');
+  } finally {
+    await app.close();
+    await rig.dispose();
+  }
+});
