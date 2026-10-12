@@ -11,12 +11,15 @@ import { CommunityView } from '../src/components/CommunityView.tsx';
 import { AdminPanel } from '../src/components/AdminPanel.tsx';
 import { AccountCard } from '../src/components/dashboard/AccountCard.tsx';
 import { ProfileCard } from '../src/components/dashboard/ProfileCard.tsx';
+import { LlmCard } from '../src/components/dashboard/LlmCard.tsx';
 import { MarketCard } from '../src/components/dashboard/MarketCard.tsx';
 import { FriendsCard } from '../src/components/dashboard/FriendsCard.tsx';
 import { encodeMigrateCode } from '../src/lib/migrate-code.ts';
 import type {
   AdminUser,
   AuthOutcome,
+  CupLlmDraft,
+  CupLlmPublic,
   FriendView,
   PackDraft,
   PersonaPack,
@@ -50,6 +53,9 @@ function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
     hasSession: () => false,
     getProfile: async (): Promise<ServerProfile | null> => ({ cup_id: 'cup-X', nickname: '小绿', traits: T }),
     saveProfile: async (nickname): Promise<ServerProfile | null> => ({ cup_id: 'cup-X', nickname, traits: T }),
+    getCupLlm: async (): Promise<CupLlmPublic | null> => null,
+    saveCupLlm: async (): Promise<CupLlmPublic | null> => null,
+    clearCupLlm: async () => true,
     listPacks: async () => [],
     submitPack: async (): Promise<PersonaPack | null> => null,
     subscribePack: async () => true,
@@ -215,6 +221,123 @@ test('ProfileCard:坏迁移码 → 明确报错,不误当成功', async () => {
   await flush();
   const status = host.querySelector('[role="status"]');
   assert.match(status!.textContent ?? '', /校验|格式|版本|损坏/);
+  unmount();
+});
+
+// ── 接入我的模型(BYOK)──────────────────────────────────────────
+
+test('LlmCard:enabled=false → 需连后端空态', () => {
+  const { host, unmount } = mount(createElement(LlmCard, { social: null, enabled: false, user: null }));
+  assert.match(host.textContent ?? '', /需连后端/);
+  unmount();
+});
+
+test('LlmCard:未登录 → 提示先登录,不出表单', () => {
+  const { host, unmount } = mount(
+    createElement(LlmCard, { social: fakeSocial(), enabled: true, user: null }),
+  );
+  assert.match(host.textContent ?? '', /登录后/);
+  assert.equal(host.querySelector('input'), null, '未登录不该有输入框');
+  unmount();
+});
+
+test('LlmCard:未接入 → 真实点击「接入」提交 provider/model/key,提交后清空 key', async () => {
+  let got: CupLlmDraft | null = null;
+  const soc = fakeSocial({
+    saveCupLlm: async (d): Promise<CupLlmPublic | null> => {
+      got = d;
+      return { cup_id: 'cup-X', provider: d.provider, model: d.model, has_key: true, updated_at: 1 };
+    },
+  });
+  const { host, unmount } = mount(createElement(LlmCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  const inputs = host.querySelectorAll('input');
+  typeInto(inputs[0] as HTMLInputElement, 'claude-opus-5'); // 模型
+  typeInto(inputs[1] as HTMLInputElement, 'sk-secret'); // 密钥
+  click(findButton(host, '接入')!);
+  await flush();
+  assert.ok(got, 'saveCupLlm 应被调用');
+  assert.equal(got!.provider, 'anthropic');
+  assert.equal(got!.model, 'claude-opus-5');
+  assert.equal(got!.key, 'sk-secret');
+  // 提交后 key 立即从表单清掉,不回显
+  assert.equal((inputs[1] as HTMLInputElement).value, '');
+  assert.match(host.textContent ?? '', /已保存/);
+  unmount();
+});
+
+test('LlmCard:切厂商 → 模型默认值跟着换(不给错配的模型名)', async () => {
+  const { host, unmount } = mount(
+    createElement(LlmCard, { social: fakeSocial(), enabled: true, user: USER }),
+  );
+  await flush();
+  const modelInput = () => host.querySelector('input[aria-label="模型名"]') as HTMLInputElement;
+  assert.equal(modelInput().value, 'claude-sonnet-4-6');
+  click(findButton(host, 'OpenAI')!);
+  await flush();
+  assert.equal(modelInput().value, 'gpt-4o-mini');
+  unmount();
+});
+
+test('LlmCard:已接入 → 显示当前模型 + 留空改模型(key 省略);真实点击「更新」', async () => {
+  let got: CupLlmDraft | null = null;
+  const soc = fakeSocial({
+    getCupLlm: async (): Promise<CupLlmPublic | null> => ({
+      cup_id: 'cup-X', provider: 'openai', model: 'gpt-4o-mini', has_key: true, updated_at: 1,
+    }),
+    saveCupLlm: async (d): Promise<CupLlmPublic | null> => {
+      got = d;
+      return { cup_id: 'cup-X', provider: d.provider, model: d.model, has_key: true, updated_at: 2 };
+    },
+  });
+  const { host, unmount } = mount(createElement(LlmCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  assert.match(host.textContent ?? '', /gpt-4o-mini/);
+  const keyInput = host.querySelector('input[aria-label="模型密钥"]') as HTMLInputElement;
+  assert.match(keyInput.placeholder, /已保存/);
+  click(findButton(host, '更新')!); // 不动 key,只更新
+  await flush();
+  assert.ok(got, 'saveCupLlm 应被调用');
+  assert.equal(got!.key, undefined, 'key 留空 → 不带上,后端沿用旧密文');
+  unmount();
+});
+
+test('LlmCard:已接入 → 真实点击「取消接入」调 clearCupLlm 并回未接入', async () => {
+  let cleared = false;
+  const soc = fakeSocial({
+    getCupLlm: async (): Promise<CupLlmPublic | null> => ({
+      cup_id: 'cup-X', provider: 'anthropic', model: 'claude-sonnet-4-6', has_key: true, updated_at: 1,
+    }),
+    clearCupLlm: async () => {
+      cleared = true;
+      return true;
+    },
+  });
+  const { host, unmount } = mount(createElement(LlmCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  click(findButton(host, '取消接入')!);
+  await flush();
+  assert.equal(cleared, true);
+  assert.match(host.textContent ?? '', /未接入/);
+  assert.equal(findButton(host, '取消接入'), undefined, '取消后不该再有取消按钮');
+  unmount();
+});
+
+test('LlmCard:模型名清空 → 前端拦下,不提交', async () => {
+  let calls = 0;
+  const soc = fakeSocial({
+    saveCupLlm: async () => {
+      calls++;
+      return null;
+    },
+  });
+  const { host, unmount } = mount(createElement(LlmCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  typeInto(host.querySelector('input[aria-label="模型名"]') as HTMLInputElement, '');
+  click(findButton(host, '接入')!);
+  await flush();
+  assert.equal(calls, 0);
+  assert.match(host.querySelector('[role="alert"]')!.textContent ?? '', /不能为空/);
   unmount();
 });
 

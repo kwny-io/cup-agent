@@ -8,6 +8,7 @@
  */
 import { AccountCard } from './dashboard/AccountCard.tsx';
 import { ProfileCard } from './dashboard/ProfileCard.tsx';
+import { LlmCard } from './dashboard/LlmCard.tsx';
 import { MarketCard } from './dashboard/MarketCard.tsx';
 import { FriendsCard } from './dashboard/FriendsCard.tsx';
 import type { Session } from '../data/useSession.ts';
@@ -19,6 +20,7 @@ export function CommunityView({ social, session }: { social: SocialApi | null; s
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
       <AccountCard session={session} enabled={enabled} />
       <ProfileCard social={social} enabled={enabled} />
+      <LlmCard social={social} enabled={enabled} user={session.user} />
       <MarketCard social={social} enabled={enabled} user={session.user} />
       <FriendsCard social={social} enabled={enabled} user={session.user} />
     </div>

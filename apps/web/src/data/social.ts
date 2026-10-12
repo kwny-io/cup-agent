@@ -15,6 +15,8 @@ import type {
   AdminUser,
   AskFailure,
   AuthOutcome,
+  CupLlmDraft,
+  CupLlmPublic,
   FriendView,
   PackDraft,
   PackStatus,
@@ -212,6 +214,31 @@ export class CloudSocial implements SocialApi {
       true,
     );
     return r.ok ? (r.data as ServerProfile) : null;
+  }
+
+  // ── 每杯自选模型(BYOK)────────────────────────────────────────
+  // 与 /profile 不同:这是**账号行为** —— 后端 GET/PUT/DELETE `/cups/:id/llm` 走
+  // 会话闸(Bearer)+ 归属校验(非主人 403),不走设备 x-api-key。故 req 不带 withApiKey。
+
+  async getCupLlm(): Promise<CupLlmPublic | null> {
+    const r = await this.req('GET', `/cups/${encodeURIComponent(this.cupId)}/llm`);
+    if (!r.ok) return null;
+    return (r.data as { config?: CupLlmPublic | null }).config ?? null;
+  }
+
+  async saveCupLlm(draft: CupLlmDraft): Promise<CupLlmPublic | null> {
+    const body: Record<string, unknown> = { provider: draft.provider, model: draft.model };
+    if (draft.base_url !== undefined && draft.base_url !== '') body.base_url = draft.base_url;
+    // key 省略 / 空串 → 后端沿用旧密文(只改模型/端点);故只在真填了才带上
+    if (draft.key !== undefined && draft.key !== '') body.key = draft.key;
+    const r = await this.req('PUT', `/cups/${encodeURIComponent(this.cupId)}/llm`, body);
+    if (!r.ok) return null;
+    return (r.data as { config?: CupLlmPublic | null }).config ?? null;
+  }
+
+  async clearCupLlm(): Promise<boolean> {
+    const r = await this.req('DELETE', `/cups/${encodeURIComponent(this.cupId)}/llm`);
+    return r.ok;
   }
 
   // ── 人格市场(#73)─────────────────────────────────────────────

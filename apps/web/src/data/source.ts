@@ -309,6 +309,34 @@ export interface ServerProfile {
   traits: TraitRecord;
 }
 
+/** 支持自选模型的提供商(BYOK)—— 与后端 `CupLlmProvider` / `isCupLlmProvider` 逐字一致 */
+export type CupLlmProvider = 'anthropic' | 'openai';
+
+/**
+ * 每杯模型配置的**出口视图**(BYOK)—— `GET|PUT /cups/:id/llm`。
+ * **绝不含 key(明文或密文)**;只有 `has_key` 布尔,前端据此显示"已接入 / 未接入"。
+ * 与后端 `CupLlmPublic` 同形(冻结握手)。
+ */
+export interface CupLlmPublic {
+  cup_id: string;
+  provider: CupLlmProvider;
+  model: string;
+  base_url?: string;
+  has_key: boolean;
+  updated_at: number;
+}
+
+/**
+ * 写入体(与后端 PUT 入口形状一致)。`key` 可省 → 沿用已有密文(只改模型/端点时不逼重填);
+ * `base_url` 可省 → 用 provider 默认端点。
+ */
+export interface CupLlmDraft {
+  provider: CupLlmProvider;
+  model: string;
+  base_url?: string;
+  key?: string;
+}
+
 export type PackStatus = 'pending' | 'approved' | 'rejected';
 
 /** 人格市场包(UGC;#73)—— **只带数值 + 文本,不执行代码**;应用前逐项区间钳制 */
@@ -391,6 +419,12 @@ export interface SocialApi {
   // ── 人格档案(#72)──
   getProfile(): Promise<ServerProfile | null>;
   saveProfile(nickname: string): Promise<ServerProfile | null>;
+
+  // ── 每杯自选模型(BYOK)── 走**账号会话**(Bearer,同 /social/*),不走设备 x-api-key
+  getCupLlm(): Promise<CupLlmPublic | null>;
+  saveCupLlm(draft: CupLlmDraft): Promise<CupLlmPublic | null>;
+  /** 取消接入(删该杯配置);无行也算成功 */
+  clearCupLlm(): Promise<boolean>;
 
   // ── 人格市场(#73)──
   listPacks(): Promise<PersonaPack[]>;
