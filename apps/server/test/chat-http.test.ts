@@ -18,8 +18,10 @@ import {
   MemoryChatStore,
   callTool,
   say,
+  createApp,
   type ChatModelTurn,
   type ChatTurn,
+  type ChatLlm,
 } from '@cup/server';
 import { createApiServer } from '../src/api/http.ts';
 import { Pipeline } from '../src/core/pipeline.ts';
@@ -269,5 +271,113 @@ test('POST /ask:模型缺席(NullChatLlm)→ 仍出确定性答复,不空白', a
     assert.match(j.answer.text, /300/);
   } finally {
     server.close();
+  }
+});
+
+// ── POST /ask:按杯自选模型 → 账户鉴权闸 ─────────────────────────
+//
+// 语义(见 http.ts 文件头):**仅当该杯配了"用户自选模型"**(resolveChatLlm 返回非 null)
+// 才改走账户鉴权 —— 未登录 401、登录但杯不属于你 403;未配 → 回退全局 chatLlm,
+// 设备/单杯旧路径零变化(上面那批 allowUnauth 无会话的用例就是回归护栏)。
+
+/** 杯 CUP 配了自选模型(桩:只回一句固定话),其它杯没有 → 验"按杯"分支。 */
+function modelForCup(cupId: string): ChatLlm | null {
+  if (cupId !== CUP) return null;
+  return new MockChatLlm([say('这是你自选模型说的话。')]);
+}
+
+async function startGated(
+  resolveChatLlm: (cupId: string) => Promise<ChatLlm | null> | ChatLlm | null,
+  cupId?: string,
+) {
+  const app = createApp({
+    log: () => {},
+    allowUnauth: true, // 隔离:只验"自选模型引起的会话闸",不叠 R10-B 的 x-api-key
+    resolveChatLlm: async (c) => resolveChatLlm(c),
+  });
+  const port = await app.listen(0);
+  const base = `http://127.0.0.1:${port}`;
+  const cups = cupId ?? CUP;
+  return { app, base, cups };
+}
+
+test('自选模型:未登录 → 401(不落到全局模型)', async () => {
+  const { app, base, cups } = await startGated(modelForCup);
+  try {
+    const r = await fetch(`${base}/cups/${cups}/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ q: '喝得怎样' }),
+    });
+    assert.equal(r.status, 401);
+  } finally {
+    await app.close();
+  }
+});
+
+test('自选模型:登录但杯不属于你 → 403', async () => {
+  const { app, base, cups } = await startGated(modelForCup);
+  try {
+    const reg = await fetch(`${base}/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'zoe@example.com', password: 'secret1' }),
+    });
+    assert.equal(reg.status, 200);
+    const { token } = (await reg.json()) as { token: string };
+    // 该用户**没绑**这只杯(cup_id 缺席) → 403,不是 401
+    const r = await fetch(`${base}/cups/${cups}/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ q: '喝得怎样' }),
+    });
+    assert.equal(r.status, 403);
+  } finally {
+    await app.close();
+  }
+});
+
+test('自选模型:登录且杯是你的 → 200,且用的是**该杯模型**', async () => {
+  const { app, base, cups } = await startGated(modelForCup);
+  try {
+    const reg = await fetch(`${base}/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'yan@example.com', password: 'secret1' }),
+    });
+    const { token } = (await reg.json()) as { token: string };
+    // 绑定自己的杯(claim 开关默认关,只校验 cup_id 形状)
+    const bind = await fetch(`${base}/social/cup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ cup_id: CUP }),
+    });
+    assert.equal(bind.status, 200);
+    const r = await fetch(`${base}/cups/${cups}/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ q: '喝得怎样' }),
+    });
+    assert.equal(r.status, 200);
+    const j = (await r.json()) as { answer: { text: string; source: string } };
+    assert.equal(j.answer.source, 'llm');
+    assert.match(j.answer.text, /自选模型/);
+  } finally {
+    await app.close();
+  }
+});
+
+test('未配自选模型的杯:即使无会话也走全局模型(旧路径零回归)', async () => {
+  // resolveChatLlm 对未知杯返回 null → 不该触发会话闸
+  const { app, base } = await startGated(() => null);
+  try {
+    const r = await fetch(`${base}/cups/${CUP}/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ q: '喝得怎样' }),
+    });
+    assert.equal(r.status, 200);
+  } finally {
+    await app.close();
   }
 });

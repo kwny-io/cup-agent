@@ -46,6 +46,12 @@ export interface AppOptions {
   llm?: Llm;
   /** 对话 agent 的模型;不给则用 NullChatLlm → 聊天恒回退确定性模板句 */
   chatLlm?: ChatLlm;
+  /**
+   * 按杯取"用户自选模型"(登录后给自己那只杯配的 provider/model/key)。
+   * 给了它 `/ask` 才可能走账户鉴权(仅当该杯确实配了模型时);不给则 `/ask` 行为不变。
+   * 由 cli 从 `CupLlmStore` 造(见 pg/llm 线,窗口 B);测试可注入假实现。
+   */
+  resolveChatLlm?: (cupId: string) => Promise<ChatLlm | null>;
   /** 对话记忆(跨天);不给则用内存实现(P3 前不落盘) */
   chatMemory?: ChatStore;
   /**
@@ -216,6 +222,7 @@ export function createApp(opts: AppOptions = {}): App {
     llm,
     chatLlm,
     chatMemory,
+    resolveChatLlm: opts.resolveChatLlm,
     apiKey,
     allowUnauth: opts.allowUnauth,
     readAuth: opts.readAuth,

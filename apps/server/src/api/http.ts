@@ -74,6 +74,12 @@ export interface ApiDeps {
   llm: Llm;
   /** 对话 agent 的模型;NullChatLlm → 聊天恒回退确定性模板句 */
   chatLlm?: ChatLlm;
+  /**
+   * 按杯取"用户自选模型"(登录后给自己那只杯配的 provider/model/key)。缺席 / 未配 → null。
+   * 返回非 null 时,`/ask` 改为**账户鉴权**:要求登录会话(401)且 `cup_id` 确属该用户(403)。
+   * 未配(返回 null)→ 回退 `chatLlm`,设备/单杯旧路径零变化。见文件头"鉴权"。
+   */
+  resolveChatLlm?: (cupId: string) => Promise<ChatLlm | null>;
   /** 对话记忆;不给则内存(不落盘) */
   chatMemory?: ChatStore;
   /**
@@ -984,10 +990,24 @@ async function askRoute(
     send(res, 400, { error: `q 过长(上限 ${MAX_QUESTION_CHARS} 字)` });
     return;
   }
+  // 用户自选模型:配了(stored 非 null)则本杯走**账户鉴权** —— 登录 401 / 非本杯 403,
+  // 并改用该杯模型;未配 → 下面的 chatDeps.chat 回退全局 chatLlm(设备/单杯旧路径零变化)。
+  let chat: ChatLlm | null = deps.resolveChatLlm ? await deps.resolveChatLlm(cupId) : null;
+  if (chat) {
+    const user = await resolveSession(
+      { store: deps.accounts!, adminEmail: deps.adminEmail },
+      bearerToken(req.headers['authorization']),
+    );
+    if (!user) return send(res, 401, { error: 'unauthorized' });
+    const account = deps.accounts ? await deps.accounts.accountById(user.user_id) : null;
+    if (account?.cup_id !== cupId) {
+      return send(res, 403, { error: '这只杯不属于你' });
+    }
+  }
   const chatDeps: ChatDeps = {
     store: deps.store,
     commands: deps.commands,
-    chat: deps.chatLlm!,
+    chat: chat ?? deps.chatLlm ?? new NullChatLlm(),
     memory: deps.chatMemory!,
     log: deps.log ?? (() => {}),
   };
