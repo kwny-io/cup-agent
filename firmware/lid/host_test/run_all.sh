@@ -65,6 +65,8 @@ run_one ota_manifest   components/cup_common/ota_manifest.c  lid/host_test/test_
 run_one eye_state      components/cup_common/eye_state.c     lid/host_test/test_eye_state.c
 # 硬件脸 · 点阵渲染(纯 C):128×128 单色,瞳孔挖空 / 弧眼 / 蒸汽带 / 1bpp 打包(2048 字节整屏)
 run_one eye_render     components/cup_common/eye_render.c    lid/host_test/test_eye_render.c
+# 设备一次性 claim code(纯 C,可信绑定设备端半):生成/规范化容错/常量时间比对/时效/一站式校验
+run_one claim_code     components/cup_common/claim_code.c    lid/host_test/test_claim_code.c
 
 if [ "$fail" -eq 0 ]; then
   echo "== 全部宿主单测通过 =="

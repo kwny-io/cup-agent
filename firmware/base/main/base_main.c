@@ -27,6 +27,7 @@
 #include "sdkconfig.h"
 
 #include "base_weight.h"
+#include "claim_store.h"
 #include "cmd_exec.h"
 #include "cmd_payload.h"
 #include "cmd_store.h"
@@ -223,6 +224,8 @@ void app_main(void) {
         sntp_start();
         sntp_wait();
     }
+    // 可信绑定设备端半:发/沿用一次性 claim code(须在 SNTP 后 —— issued_at 要真墙钟)。
+    claim_bringup(now_unix_ms());
 
     mqtt_uplink_start(on_command);
 

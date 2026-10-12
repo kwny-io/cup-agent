@@ -11,6 +11,8 @@
 #   ota_manifest.c   ota manifest 解析与校验(纯 C,零 IDF;下载/分区归 IDF 半、待真板)
 #   eye_state.c      硬件脸眼睛状态机(十二态,纯 C,零 IDF;双形体人格的硬件半边)
 #   eye_render.c     硬件脸点阵渲染(128×128 单色 + 1bpp 打包,纯 C,零 IDF)
+#   claim_code.c     设备一次性 claim code:生成/规范化/校验(纯 C,零 IDF;可信绑定设备端半)
+#   claim_store.c    claim code 持久化(NVS 薄壳)
 #   wifi_sta.c       Wi-Fi STA
 #   mqtt_uplink.c    esp-mqtt 上行/下行
 #   prov.c           BLE 配网(wifi_prov_mgr 薄壳,首次拿 Wi-Fi 凭据)
@@ -31,6 +33,8 @@ idf_component_register(
         "ota_manifest.c"
         "eye_state.c"
         "eye_render.c"
+        "claim_code.c"
+        "claim_store.c"
         "wifi_sta.c"
         "mqtt_uplink.c"
         "prov.c"

@@ -7,7 +7,10 @@
  *
  * 关键约定(全是单测/联调踩过的点):
  *   1. broker 连上后**先订阅自己的 down topic**,再发 `{kind:"hello"}` 握手
- *      (后端 handleLine 对 hello 在 schema 校验前放行);
+ *      (后端 handleLine 对 hello 在 schema 校验前放行)。握手带上可信绑定的
+ *      `cup_id`/`claim`/`issued_at`(`claim` 取自 NVS,见 claim_store);无有效码时
+ *      退化为旧形 `{kind,v}`,后端按"无 claim 不 upsert"处理 —— 字段住在契约之外的
+ *      hello 帧上,故**不碰 packages/contract**;
  *   2. 上行每条信封**单独一条 publish**,QoS1、retain=false;
  *   3. topic 里的 device_id 必须 == 报文里的 device_id,否则后端拒收;
  *   4. 下行是 JSON **数组**;QoS1 可能重投 → 交给 command_parse 的 cmd_id 去重。

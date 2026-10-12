@@ -13,6 +13,7 @@
 | M7 · 下行指令真执行 | `config` 改上报间隔(落 NVS 续存)/ `sync_time` 对时 / `remind` 记日志 | 源码就绪,待真板编译烧录 |
 | M10 · remind 点灯 | `remind.led` 名 → 灯效(亮/闪/呼吸)→ 板载 LEDC 驱动输出 | 源码就绪,待真板编译烧录 |
 | M8 · 端侧信号质量 + 配网 | ToF 液位滤波 / 实时档(40Hz IMU)决策 / 断网上行缓存 / BLE 配网 | 源码就绪,待真板编译烧录 |
+| M11 · 可信绑定(设备端半) | 一次性 claim code:NVS 出码(Crockford Base32,24h 时效,用过即废) | 源码就绪,待真板编译烧录;服务端校验归窗口 A |
 
 盖与底座**共用** `components/cup_common/`(契约层、下行解析、Wi-Fi、MQTT)—— 设备无关的东西
 只此一份,避免两边契约漂移。
@@ -35,6 +36,8 @@ firmware/
 │   ├── led_pattern.{h,c}         remind 灯效决策:led 名 → 效果序列(纯 C)
 │   ├── led_driver.{h,c}          板载 LED 驱动:LEDC/PWM,亮/灭/闪/呼吸(ESP-IDF)
 │   ├── ota_manifest.{h,c}        ota manifest 解析与校验:url/sha256/size(纯 C;下载归 IDF 半)
+│   ├── claim_code.{h,c}          设备绑定码:Crockford Base32 生成/规范化/常量时间比对/时效(纯 C)
+│   ├── claim_store.{h,c}         绑定码持久化:NVS 存/取 + "已用"标志,一次性(ESP-IDF)
 │   ├── eye_state.{h,c}           硬件脸眼睛状态机:十二态词汇表 + 交接闭眼 + 水烫叠加(纯 C)
 │   ├── eye_render.{h,c}          硬件脸点阵渲染:128×128 单色 + 1bpp 打包 + 脏行/脏段(纯 C)
 │   ├── wifi_sta.{h,c}            Wi-Fi STA + wifi_bringup() 联网上线总入口(ESP-IDF)
@@ -96,7 +99,7 @@ CC=/c/mingw64/mingw64/bin/gcc.exe bash lid/host_test/run_all.sh
 
 (Linux/macOS 或已把 gcc 放进 PATH:直接 `bash lid/host_test/run_all.sh`。)
 
-当前**十九组、共 498 条**断言全绿:
+当前**二十组、共 536 条**断言全绿:
 
 - `contract_dev` 59 条 —— 枚举字符串逐字、换算对齐 `constants.ts`、盖/底座两种信封字段、
   `ts` 13 位不回绕、`amount_ml` 仅 drink/refill、**base 无 imu/rssi 字段**、缓冲不足不越界
@@ -150,6 +153,10 @@ CC=/c/mingw64/mingw64/bin/gcc.exe bash lid/host_test/run_all.sh
   **逐行脏标记**(`eye_render_dirty_rows`)+ **脏行合并成连续段**(`eye_render_dirty_spans` ——
   Memory LCD 局部刷新省电的核心决策,边界:首行脏/末行脏/隔行脏全在纯 C 里钉死,
   IDF 薄壳只循段推面板)
+- `claim_code` 38 条 —— **设备一次性绑定码**(可信绑定的设备端半):**Crockford Base32**
+  生成(8 位、去 I/L/O/U)、规范化容错(忽略空格/连字符/下划线、大小写无关、**O→0 与 I/L→1**
+  纠正抄录歧义)、**常量时间比对**、时效(签发时刻 0 视为未知=过期、时钟倒挂=过期)、
+  一站式校验(已用/过期/错码/形状非法 全拒),边界:恰在 TTL 上界有效(≤)、两空串相等
 
 ---
 
@@ -321,6 +328,35 @@ broker/网络断掉时的遥测不再丢:数据先入 `uplink_buffer`(有界 FIF
 满则丢**最旧**),esp-mqtt 重连 CONNECTED 后自动补发。串口可见
 `未连 broker,暂存上行(队列 N)` 与连上后的 `补发 K 条(丢弃 D)`。这使"刚启动、broker 还没连上"
 的过渡期不丢首帧,也让短暂断网不产生空洞。
+
+### 3.4 可信绑定的设备端半:一次性 claim code(M11)
+
+**为什么需要它**:后端的 `POST /social/cup`(绑定杯到账号)此前**只校验 `cup_id` 的形状**,
+不验调用者是否真拥有那只杯 —— 于是 A 可以把 B 的杯绑到自己名下,再顺手删掉 B 的数据。
+堵法是**要绑定方出示只可能来自真设备的一串码**:连上 SNTP 后固件发一枚一次性 claim code,
+用户从串口(App 未接前)抄下来,绑定时一并提交;服务端校验它属于该 `cup_id` 且未用过。**服务端
+半归窗口 A**;固件这半只负责"发码 + 存码 + 认用过"。
+
+**码的形状**:8 位 **Crockford Base32**(`0-9 A-Z` 去掉易混的 **I/L/O/U**)。
+抄录歧义由规范化兜掉 —— 忽略空格/连字符/下划线、大小写无关、并把 **`O`→`0`、`I`/`l`→`1`**
+纠正过来;比对用常量时间(长度非秘密,但逐字比较不提前返回)。**24h 时效 + 一次性**。
+
+**手动验证**(不需真传感器,合成源即可):
+
+1. 烧录上电,串口在 SNTP 对时**之后**打印
+   `设备绑定码(24h 内有效,一次性):XXXXXXXX —— 在 App 里输入以完成绑定`(8 位、无分隔符;WARN 级,醒目);
+2. **断电重启** → 打印 `沿用已有设备绑定码(未用且未过期),不重发` —— 证明码落 NVS、且不因重启
+   把用户刚抄下的码换掉;
+3. 码被标记已用(服务端绑定成功通知,或过期)后,**下次上电重新发一枚新码**。
+
+调用点在两个 `app_main` 里、SNTP 块之后:`claim_bringup(now_unix_ms())`(issued_at 要真墙钟,
+否则服务端一算就过期)。**码怎么到服务端**:MQTT 连上后发的 hello 握手帧**顺带带上它** ——
+`{"kind":"hello","v":1,"cup_id":"…","claim":"XXXXXXXX","issued_at":<ms>}`。hello 是设备→服务的
+握手帧,后端在契约校验**之前**按 `kind==='hello'` 放行(`mqtt-adapter.ts`),故这几个字段
+**不碰 `packages/contract`**。设备侧从 NVS 读当前生效码拼进 hello;取不到(还没配网/已用/过期)
+则退化成旧形 `{kind,v}`,后端按"无 claim 不 upsert"处理 —— 缺码不阻断握手。持久化走 NVS
+命名空间 `cup_claim`(键 `code`/`issued`/`used`)——
+`used` 单独一个键而非删码,保留"这枚已作废"的事实便于排查。纯 C 层(`claim_code`)宿主单测 38 条。
 
 ---
 

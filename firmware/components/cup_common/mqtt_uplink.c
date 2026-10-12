@@ -7,6 +7,9 @@
 #include <string.h>
 #include <time.h>
 
+#include <inttypes.h>
+
+#include "claim_store.h"
 #include "command_parse.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -33,6 +36,32 @@ static bool drain_send(const char *payload, void *ctx) {
     return esp_mqtt_client_publish(s_client, s_up_topic, payload, len, 1, 0) >= 0;
 }
 
+/**
+ * 发 hello 握手。带上可信绑定用的 claim(设备一次性码)+ cup_id + issued_at,
+ * 服务端在 handleLine 里于契约校验**之前**按 kind==='hello' 放行,故这些字段不碰契约。
+ * 从 NVS 取当前生效码(claim_store);取不到(还没配网/已用/过期)则发旧形 hello,
+ * 服务端据"无 claim 字段"跳过 upsert —— 不因缺码而阻断握手。
+ */
+static void publish_hello(void) {
+    char code[CUP_CLAIM_BUF] = {0};
+    uint64_t issued = 0;
+    bool has_claim = claim_store_load(code, &issued, NULL) && code[0] != '\0';
+    if (!has_claim) {
+        esp_mqtt_client_publish(s_client, s_up_topic, "{\"kind\":\"hello\",\"v\":1}", 0, 1, 0);
+        return;
+    }
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf),
+                     "{\"kind\":\"hello\",\"v\":1,\"cup_id\":\"%s\",\"claim\":\"%s\",\"issued_at\":%" PRIu64 "}",
+                     CONFIG_CUP_CUP_ID, code, issued);
+    if (n <= 0 || n >= (int)sizeof(buf)) {
+        ESP_LOGW(TAG, "hello 拼装失败,退化为无 claim 握手");
+        esp_mqtt_client_publish(s_client, s_up_topic, "{\"kind\":\"hello\",\"v\":1}", 0, 1, 0);
+        return;
+    }
+    esp_mqtt_client_publish(s_client, s_up_topic, buf, n, 1, 0);
+}
+
 static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg; (void)base;
     esp_mqtt_event_handle_t ev = (esp_mqtt_event_handle_t)data;
@@ -42,8 +71,11 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
             ESP_LOGI(TAG, "已连接 broker");
             // 1) 先订自己的下行 topic
             esp_mqtt_client_subscribe(s_client, s_down_topic, 1);
-            // 2) 再发 hello 握手(镜像模拟器出口;后端在 schema 校验前放行)
-            esp_mqtt_client_publish(s_client, s_up_topic, "{\"kind\":\"hello\",\"v\":1}", 0, 1, 0);
+            // 2) 再发 hello 握手(镜像模拟器出口;后端在 schema 校验前放行)。
+            //    顺带带上可信绑定的 claim(见 claim_store):服务端拿它在 hello 分支记
+            //    (device→码哈希),用户绑杯时出示同一枚码。无有效码则退化成旧形
+            //    {kind,v}—— 服务端按"无 claim 不 upsert"处理(本机无码 = 还没配网)。
+            publish_hello();
             ESP_LOGI(TAG, "已订阅 %s 并握手", s_down_topic);
             // 3) 补发断网期间暂存的上行(按入队顺序;失败则留到下次)
             {
