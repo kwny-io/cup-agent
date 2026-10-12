@@ -77,6 +77,13 @@ export {
   type ProfileStore,
 } from './core/traits.ts';
 export { MemoryAccountsStore, FileAccountsStore } from './core/social/accounts.ts';
+// ── Postgres 存储层(第 2 阶段;pg 归窗口 B)──────────────────────
+export { createPgPool, query, queryOne, withTransaction, type Pool } from './store/pg/pool.ts';
+export { migrate, ensurePartitions, listPartitions, dropPartition } from './store/pg/migrate.ts';
+export { PgStore } from './store/pg/store.ts';
+export { PgChatStore } from './store/pg/chat.ts';
+export { PgAccountsStore } from './store/pg/accounts.ts';
+export { PgProfileStore } from './store/pg/profile.ts';
 export {
   register,
   login,
@@ -173,4 +180,12 @@ export {
 } from './ingest/mqtt-adapter.ts';
 export { createNodeMqttTransport, type NodeMqttTransportOptions } from './ingest/mqtt-node-transport.ts';
 export type { MqttTransport, MqttTransportMessage } from './ingest/mqtt-transport.ts';
-export type { DailyAgg, FusedSample, TelemetryPoint } from './core/types.ts';
+export {
+  buildCardDetails,
+  closeDayCard,
+  maybeCloseDay,
+  turnsSummary,
+  MAX_NOTABLE_EVENTS,
+  MAX_SUMMARY_CHARS,
+} from './core/memory-cards.ts';
+export type { DailyAgg, FusedSample, MemoryCard, MemoryCardDetails, TelemetryPoint } from './core/types.ts';

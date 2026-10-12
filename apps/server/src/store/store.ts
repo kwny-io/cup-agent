@@ -8,7 +8,7 @@
  * 接口形状照架构 §5.2 数据模型(telemetry / events / daily_agg),将来换真库对得上。
  */
 import type { CupEvent } from '@cup/contract';
-import type { DailyAgg, FusedSample, TelemetryPoint } from '../core/types.ts';
+import type { DailyAgg, FusedSample, MemoryCard, TelemetryPoint } from '../core/types.ts';
 import { dayKey, dayStart, shiftDay } from '../core/day-boundary.ts';
 
 /**
@@ -44,6 +44,14 @@ export interface Store {
   /** 当前融合估计的快照(给 WS 首帧 / REST /state) */
   setLatestSample(s: FusedSample): Promise<void>;
   latestSample(cupId: string): Promise<FusedSample | null>;
+
+  // ── 长期记忆:记忆卡(第 3 阶段)──
+  /** 封存一张卡(幂等 UPSERT:同 cup+date 覆盖)。天翻页时由 proactive 调。 */
+  putMemoryCard(card: MemoryCard): Promise<void>;
+  /** 取某杯某天的卡;没有 → null。 */
+  memoryCard(cupId: string, date: string): Promise<MemoryCard | null>;
+  /** 最近 n 天的卡(旧→新,只含有卡的天)。给 recall 用。 */
+  recentMemoryCards(cupId: string, date: string, days: number): Promise<MemoryCard[]>;
 }
 
 // ── 日界 ─────────────────────────────────────────────────────────
@@ -88,6 +96,7 @@ export class MemoryStore implements Store {
   private aggs = new Map<string, DailyAgg>(); // key: `${cupId}|${date}`
   private goals = new Map<string, number>();
   private latest = new Map<string, FusedSample>();
+  private cards = new Map<string, MemoryCard>(); // key: `${cupId}|${date}`
   /** 日均温的增量累计:{ `${cupId}|${date}` → {sum, n} },免得留样本数组 */
   private tempAcc = new Map<string, { sum: number; n: number }>();
   private readonly onGoal?: (cupId: string, ml: number) => void;
@@ -197,6 +206,26 @@ export class MemoryStore implements Store {
 
   async latestSample(cupId: string): Promise<FusedSample | null> {
     return this.latest.get(cupId) ?? null;
+  }
+
+  // ── 长期记忆:记忆卡(第 3 阶段)──
+
+  async putMemoryCard(card: MemoryCard): Promise<void> {
+    this.cards.set(`${card.cup_id}|${card.date}`, card);
+  }
+
+  async memoryCard(cupId: string, date: string): Promise<MemoryCard | null> {
+    return this.cards.get(`${cupId}|${date}`) ?? null;
+  }
+
+  async recentMemoryCards(cupId: string, date: string, days: number): Promise<MemoryCard[]> {
+    const out: MemoryCard[] = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = shiftDay(date, -i);
+      const c = this.cards.get(`${cupId}|${d}`);
+      if (c) out.push(c);
+    }
+    return out;
   }
 
   /**

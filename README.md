@@ -15,7 +15,7 @@ apps/web            前端:卡通杯 + 数据看板 + 对话(见 apps/web/README
 
 ```bash
 npm install
-npm test          # 221 个测试:契约 + 模拟器行为/手动控制 + 后端管线/验收/性格层/对话/画像蒸馏/MQTT/HTTP 中转/API/日界时区
+npm test          # 314 个测试:契约 + 模拟器行为/手动控制 + 后端管线/验收/性格层/对话/画像蒸馏/MQTT/HTTP 中转/API/日界时区/记忆卡+recall/可信绑定(http 层含 PG 契约,无库自动 skip)
 npm run typecheck # 类型检查(根 tsc + apps/web)—— CI 三闸之一
 npm --workspace @cup/web test   # 前端 168 个测试:纯逻辑单测 + 组件级测试(jsdom 真挂载)
 npm run sim       # 跑典型一天(默认 60× 加速)

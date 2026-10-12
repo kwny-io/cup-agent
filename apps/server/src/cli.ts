@@ -20,6 +20,8 @@ import { FetchChatLlm } from './core/chat/anthropic.ts';
 import { NullChatLlm } from './core/chat/mock.ts';
 import type { ChatLlm } from './core/chat/types.ts';
 import { setDayTimeZone, getDayTimeZone } from './core/day-boundary.ts';
+import { createPgPool } from './store/pg/pool.ts';
+import { migrate } from './store/pg/migrate.ts';
 
 interface Args {
   port: number;
@@ -188,6 +190,41 @@ async function main(): Promise<void> {
   const chatLlm = makeChatLlm();
   const dataDir = process.env.CUP_DATA_DIR ?? './.data';
   const apiKey = process.env.CUP_API_KEY;
+  const pgUrl = process.env.CUP_PG_URL;
+
+  // --migrate:跑完迁移即退(CI / 部署用)。须先于 createApp —— 表没建好别起服务。
+  if (process.argv.includes('--migrate')) {
+    if (!pgUrl) {
+      console.error('[fatal] --migrate 需要 CUP_PG_URL(未设 → 无库可迁)');
+      process.exit(2);
+    }
+    const pool = createPgPool(pgUrl);
+    try {
+      const ran = await migrate(pool);
+      console.log(ran.length ? `迁移完成:${ran.join(', ')}` : '迁移完成:已是最新');
+      await pool.end();
+      process.exit(0);
+    } catch (err) {
+      console.error(`[fatal] 迁移失败:${(err as Error).message}`);
+      await pool.end();
+      process.exit(2);
+    }
+  }
+
+  // 选了 Postgres:启动前先跑迁移(失败即带清晰 fatal 中止,别起一个半死不活的服务)
+  if (pgUrl) {
+    const pool = createPgPool(pgUrl);
+    try {
+      const ran = await migrate(pool);
+      if (ran.length) log(`已跑迁移:${ran.join(', ')}`);
+    } catch (err) {
+      console.error(`[fatal] 迁移失败:${(err as Error).message}`);
+      await pool.end();
+      process.exit(2);
+    }
+    await pool.end(); // 迁移用的池关掉;createApp 会按 pgUrl 自建它自己的池
+  }
+
   const app = createApp({
     simUrl: args.simUrl ?? undefined,
     mqttUrl: args.mqttUrl ?? undefined,
@@ -196,6 +233,7 @@ async function main(): Promise<void> {
     llm,
     chatLlm,
     dataDir,
+    pgUrl,
     proactive: args.proactive,
     cups: args.cups,
     profileMinNewTurns: args.profileMinTurns ?? undefined,

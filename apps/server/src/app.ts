@@ -24,6 +24,11 @@ import type { AccountsStore } from './core/social/types.ts';
 import { ClaimService, resolveClaimPepper } from './core/social/claim.ts';
 import { FileProfileStore, MemoryProfileStore, type ProfileStore } from './core/traits.ts';
 import { ProactiveScheduler } from './core/proactive.ts';
+import { createPgPool, type Pool } from './store/pg/pool.ts';
+import { PgStore } from './store/pg/store.ts';
+import { PgChatStore } from './store/pg/chat.ts';
+import { PgAccountsStore } from './store/pg/accounts.ts';
+import { PgProfileStore } from './store/pg/profile.ts';
 import { randomBytes } from 'node:crypto';
 import type { Server } from 'node:http';
 
@@ -48,6 +53,14 @@ export interface AppOptions {
    * 不给则纯内存(测试/离线用)。
    */
   dataDir?: string;
+  /**
+   * Postgres 连接串(第 2 阶段)。给则四个 store 全走 Pg 实现(十万用户规模);
+   * 不给则退到 dataDir 文件实现 / 内存实现。优先级:注入 store > pgUrl > dataDir > memory。
+   * **迁移由调用方(cli)在 createApp 之前跑**(见 store/pg/migrate.ts)。
+   */
+  pgUrl?: string;
+  /** 已建好的 pg 连接池(测试注入;给了它则忽略 pgUrl)。`app.close()` 会关它。 */
+  pgPool?: Pool;
   /** 开启主动开口(P5);不给则不起调度器(默认关,避免测试里乱说话) */
   proactive?: boolean;
   /** 要照看的杯子;默认空(需显式给,免得对未配网的 id 说话) */
@@ -126,25 +139,41 @@ export function createApp(opts: AppOptions = {}): App {
   const log = opts.log ?? ((m, l = 'info') => console[l](m));
   // 有 dataDir → 文件持久化:目标恢复 + 变更回调 + 对话轮落盘(ADR T14)。
   // 用一个可选钩子接进 MemoryStore,**不动 Store 接口**(T3「只换实现,不动上层」)。
-  const persist = opts.dataDir ? new FilePersistence(opts.dataDir) : null;
+  // 注意:选 Pg 时不建 persist(持久化的活儿归 DB;state.json 不参与)。
+  const pool = opts.pgPool ?? (opts.pgUrl ? createPgPool(opts.pgUrl) : null);
+  const persist = !pool && opts.dataDir ? new FilePersistence(opts.dataDir) : null;
   const store =
     opts.store ??
-    new MemoryStore(
-      persist
-        ? { goals: persist.goals(), onGoal: (cupId, ml) => persist.setGoal(cupId, ml) }
-        : {},
-    );
+    (pool
+      ? new PgStore(pool)
+      : new MemoryStore(
+          persist
+            ? { goals: persist.goals(), onGoal: (cupId, ml) => persist.setGoal(cupId, ml) }
+            : {},
+        ));
   const live = new LiveHub();
   const commands = new CommandQueue();
   const llm = opts.llm ?? new NullLlm();
   const chatLlm = opts.chatLlm ?? new NullChatLlm();
-  const chatMemory = opts.chatMemory ?? (persist ? new FileChatStore(persist) : new MemoryChatStore());
+  const chatMemory =
+    opts.chatMemory ??
+    (pool ? new PgChatStore(pool) : persist ? new FileChatStore(persist) : new MemoryChatStore());
   // 账号 / 会话 / 市场 / 社交(独立文件 social.json,与 state.json 同一套原子写机制)。
   const accounts =
-    opts.accounts ?? (opts.dataDir ? new FileAccountsStore(opts.dataDir) : new MemoryAccountsStore());
+    opts.accounts ??
+    (pool
+      ? new PgAccountsStore(pool)
+      : opts.dataDir
+        ? new FileAccountsStore(opts.dataDir)
+        : new MemoryAccountsStore());
   // 人格档案(#72):挂在 state.json 的 traits 段上(无 dataDir 则内存)
   const profiles =
-    opts.profiles ?? (persist ? new FileProfileStore(persist) : new MemoryProfileStore());
+    opts.profiles ??
+    (pool
+      ? new PgProfileStore(pool)
+      : persist
+        ? new FileProfileStore(persist)
+        : new MemoryProfileStore());
   // 可信绑定(claim code):收码规则厚、路由薄;pepper 由 env/dataDir 解析(明文码绝不落盘)。
   const claimPepper = opts.claimPepper ?? resolveClaimPepper(opts.dataDir);
   const claims = new ClaimService({ store: accounts, pepper: claimPepper, log });
@@ -234,10 +263,11 @@ export function createApp(opts: AppOptions = {}): App {
       adapter?.stop();
       mqtt?.stop();
       live.close();
-      await chatMemory.flush(); // 会话记忆落盘(内存实现 no-op)
-      await accounts.flush(); // 账号 / 会话 / 市场 / 社交落盘(内存实现 no-op)
-      await profiles.flush(); // 人格档案落盘(内存实现 no-op)
-      await persist?.flush(); // 目标 + 画像落盘
+      await chatMemory.flush(); // 会话记忆落盘(内存/Pg 实现 no-op)
+      await accounts.flush(); // 账号 / 会话 / 市场 / 社交落盘(内存/Pg 实现 no-op)
+      await profiles.flush(); // 人格档案落盘(内存/Pg 实现 no-op)
+      await persist?.flush(); // 目标 + 画像落盘(仅文件实现)
+      await pool?.end(); // 关 pg 连接池(仅 Pg 模式)
       await new Promise<void>((r) => server.close(() => r()));
     },
   };

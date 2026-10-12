@@ -198,6 +198,73 @@ const getSelf: ToolDef = {
   },
 };
 
+// ── 只读:recall ─────────────────────────────────────────────────
+
+/** recall 一次最多回看多少天(有界,别把一个月卡灌进提示词) */
+const MAX_RECALL_DAYS = 30;
+
+/**
+ * `recall` 参数:要么指定某一天(`day`),要么给个最近天数(`recent`)。
+ * **两者都不给 → 默认最近 7 天**(最常用的"最近怎么样")。
+ * 都给了 → 以 `day` 为准(更具体)。
+ */
+const RecallArgs = z.object({
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  recent: z.int().min(1).max(MAX_RECALL_DAYS).optional(),
+});
+const DEFAULT_RECALL_DAYS = 7;
+
+const recall: ToolDef = {
+  isWrite: false,
+  spec: {
+    name: 'recall',
+    description:
+      '回忆过去某天/最近几天的**点滴**(不只数字:那天喝得怎么样、有没有被摔/烫/没电、聊过什么)。' +
+      '当用户提到过去("上周""那天""前几天我说过…""最近喝得如何")或你想把眼前的事和以前联系起来时用它。' +
+      '不给参数默认最近 7 天。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        day: { type: 'string', description: '某一天(YYYY-MM-DD);给它就只看那天' },
+        recent: { type: 'integer', minimum: 1, maximum: MAX_RECALL_DAYS, description: '回看最近几天,默认 7' },
+      },
+      additionalProperties: false,
+    },
+  },
+  parse: (input) => {
+    const r = RecallArgs.safeParse(input ?? {});
+    return r.success ? r.data : null;
+  },
+  async run(ctx, cupId, input) {
+    const { day, recent } = input as { day?: string; recent?: number };
+    const today = dayKey(ctx.now());
+    const days = recent ?? DEFAULT_RECALL_DAYS;
+    // 指定了 day → 只取那天;否则取最近 days 天(含今天)
+    const cards = day
+      ? [await ctx.store.memoryCard(cupId, day)].filter((c) => c !== null)
+      : await ctx.store.recentMemoryCards(cupId, today, days);
+
+    const out = cards.map((c) => {
+      const d = c.details;
+      return {
+        date: c.date,
+        drank_ml: d.drank_ml,
+        goal_ml: d.goal_ml,
+        reached: d.reached,
+        streak: d.streak,
+        refill_count: d.refill_count,
+        temp_min_c: d.temp_range ? d.temp_range[0] : null,
+        temp_max_c: d.temp_range ? d.temp_range[1] : null,
+        notable_events: d.notable_events,
+        body_cues: d.body_cues,
+        turns_summary: d.turns_summary,
+      };
+    });
+    // 命中多少天也进 allow 集合(模型说"我记得有 3 天…"不算凭空)
+    return { ok: true, output: { days: out.length, cards: out } };
+  },
+};
+
 // ── 写:set_goal ─────────────────────────────────────────────────
 
 const SetGoalArgs = z.object({ goal_ml: z.int().min(1).max(10_000) });
@@ -300,6 +367,7 @@ const REGISTRY: Record<string, ToolDef> = {
   get_today: getToday,
   get_history: getHistory,
   get_self: getSelf,
+  recall: recall,
   set_goal: setGoal,
   push_device: pushDevice,
 };

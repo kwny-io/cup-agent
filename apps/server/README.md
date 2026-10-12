@@ -42,6 +42,7 @@ curl http://localhost:8788/cups/cup-A1B2C3/today            # 拉今日概览
 | GET | `/cups/:id/report/latest` | 最新每日战报(LLM 或模板) |
 | GET | `/cups/:id/report/history?days=N` | 历史战报逐日 |
 | GET | `/cups/:id/personality/history?days=N` | 脾气变化史(养成卡只读半) |
+| GET | `/cups/:id/memory?day=YYYY-MM-DD` | 某天的记忆卡(`recent=N` 取最近 N 天,≤30、缺省 7;`build=1` 按需补建) |
 
 **实时**:`ws://localhost:8788/cups/<cup_id>/live` —— 新帧 / 主动搭话(`{kind:'proactive'}`)推给订阅者。
 
@@ -66,6 +67,7 @@ curl http://localhost:8788/cups/cup-A1B2C3/today            # 拉今日概览
 | `--allow-unauth` | 关 | 豁免写端点鉴权(本地开发) |
 | `--read-auth` | 关 | 读端点也要 key |
 | `--tz` | `$CUP_TZ` | 日界时区(IANA,如 `Asia/Shanghai`);缺省用服务器本地时区 |
+| `--migrate` | 关 | 跑迁移建表后即退(不启服务) |
 | `--quiet` | 关 | 不打启动日志 |
 
 ### 环境变量
@@ -77,6 +79,7 @@ curl http://localhost:8788/cups/cup-A1B2C3/today            # 拉今日概览
 | `CUP_MQTT_URL` / `CUP_MQTT_CLIENT_ID` | 真机 MQTT(多实例部署 client id 必须各不相同) |
 | `CUP_API_KEY` | 写端点鉴权 key |
 | `CUP_DATA_DIR` | 数据目录(目标 + 对话轮持久化);缺省 `./.data` |
+| `CUP_PG_URL` | Postgres 连接串;设了则启用 `PgStore` 四件套,缺省仍走内存 |
 | `CUP_TZ` | 日界时区 |
 
 ## 数据怎么流(pipeline)
@@ -105,6 +108,40 @@ api/http + api/live ── REST + WS 出口
 **上游上报的是半成品,融合与聚合都在后端** —— 真机与模拟器吐同一份契约,后端一行不改就能收
 (见 `firmware/README.md` §三"联调验收")。
 
+## 存储层:内存默认,Postgres 可选
+
+`store/store.ts` 的 `Store`/`ChatStore`/`AccountsStore`/`ProfileStore` 四个接口**全 `Promise` 化**,
+`MemoryStore` 是零基建默认(现有测试照跑);设 `CUP_PG_URL` 即整体切到 `PgStore` 四件套
+(`store/pg/*`),上层一行不改 —— 这就是"只换实现,不动上层"的缝。
+
+```bash
+node apps/server/src/cli.ts --migrate            # 建表后即退(需 CUP_PG_URL)
+CUP_PG_URL=postgres://… node apps/server/src/cli.ts   # 起服务,自动跑迁移
+```
+
+- **迁移**:手写编号 `.sql`(`store/pg/migrations/`),`migrate.ts` 用 `schema_migrations` 表逐个应用,
+  每个迁移各在自己的事务里;**无 ORM**。
+- **分区**:`telemetry`/`events` 按 `ts` 月分区(`ensurePartitions(now, ahead=2)`),粗粒度保留期靠
+  **删整分区**(不逐行删)。
+- **隔离纪律**:Pg 契约测试用一次性 schema(`CREATE SCHEMA c<rand>` + 连接串 `options=-c search_path=…`),
+  与内存侧的 `mkdtemp` 临时目录同款。
+
+## 记忆卡 + `recall`
+
+"每天的点滴"落成**记忆卡**(`memory_cards.details` jsonb):`drank_ml / goal_ml / reached / streak /
+refill_count / temp_range / notable_events / body_cues / turns_summary`。
+
+- **写入时机 = 天翻页**,并入 `ProactiveScheduler.tick` 的 `maybeCloseDay`:`dayKey(now)` 一变,就用
+  昨天那份 `daily_agg` + `events` + 当天 `chat_turns` 拼卡 `UPSERT`。幂等(迟/重 tick 都安全),
+  且**不占热路径**;既无事件又无对话的天**不建空卡**。按需补建走 `GET /cups/:id/memory?day=…&build=1`。
+- **`recall` 工具**(`isWrite:false`):`{ day? , recent? }`(recent ≤ 30),读卡喂回 agent。卡里的数字
+  经 `agent.ts` 既有的 `collectNumbers` **自动进数字护栏** —— 模型复述记忆里的数不算凭空。
+- **与 `profile()` 的关系**:并存相加。`profile()` 是**始终注入**的滚动身份;`recall` 是**按需拉取**的
+  情景细节(用户提"上周""那天…"时调)。
+
+（**待落**:第 4 阶段三档删除 `DELETE /cups/:id/memory?scope=` + `DELETE /account`,硬前置是设备侧
+一次性 claim code 的可信绑定。）
+
 ## 目录地图
 
 ```
@@ -112,7 +149,8 @@ src/api/        HTTP 路由 + WS LiveHub
 src/core/       纯逻辑:管线 / 融合 / 去重 / 日界 / 战报 / 性格 / 主动 / 对话 agent
 src/core/chat/  对话子系统:prompt、tools、anthropic 客户端、记忆、画像蒸馏、guard
 src/ingest/     上游适配层:sim(WS)/ mqtt / http
-src/store/      事件 + 聚合 + 目标存储
+src/store/      事件 + 聚合 + 目标存储(MemoryStore 默认)
+src/store/pg/   Postgres 实现:pool / 四件套 store / migrate + migrations/*.sql
 src/cli.ts      入口
 src/app.ts      组装(Store + Pipeline + LiveHub + API + 适配器)
 src/dev-broker-cli.ts  本地开发用 broker(三进程端到端联调用)
@@ -123,7 +161,10 @@ src/dev-broker-cli.ts  本地开发用 broker(三进程端到端联调用)
 ```bash
 npm test                                          # 根:契约 + 模拟器 + 后端
 node --test --test-reporter=spec "apps/server/test/*.test.ts"   # 只跑后端
+# Postgres 契约(同一组断言跑 Memory 与 Pg 两个实现;不设 URL 则 Pg 侧 skip):
+CUP_PG_URL=postgres://… node --test apps/server/test/store-contract.test.ts
 ```
 
 覆盖:管线融合、日界时区、战报、性格史、对话(HTTP / 画像蒸馏 / guard)、主动开口、
-MQTT 适配(含真 broker)、HTTP 中转、API 鉴权与错误、持久化、端到端验收。
+MQTT 适配(含真 broker)、HTTP 中转、API 鉴权与错误、持久化、记忆卡 + `recall`、端到端验收。
+`store-contract.test.ts` 把同一组 store 断言同时喂给 `MemoryStore` 与 `PgStore`,证明"只换实现、语义不变"。

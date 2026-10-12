@@ -47,6 +47,42 @@ export interface FusedSample {
   stable: boolean;
 }
 
+/**
+ * 记忆卡的一天(第 3 阶段)—— "每天的点滴"沉淀成一张可 recall 的卡。
+ *
+ * 与 `daily_agg` 的分工:agg 是**数值 rollup**(drink/sample 热路径驱动);
+ * 卡是**天翻页时一次性封存的叙事快照** —— 数值 + 当天事件 + 身体线索 + 对话蒸馏。
+ * 卡里每个数字都**来自真实来源**(agg / events / turns),故 recall 把它喂回 agent 时,
+ * 这些数字天然可追溯(agent.ts 对每个工具结果跑 collectNumbers)。
+ */
+export interface MemoryCardDetails {
+  drank_ml: number;
+  goal_ml: number;
+  reached: boolean;
+  streak: number;
+  refill_count: number;
+  /** 水温区间 [最低, 最高];当天无水温 → null */
+  temp_range: [number, number] | null;
+  /** 当天"值得记一笔"的事件(被摔/烫/没电/倾斜/离座),按 ts 升序 */
+  notable_events: { type: string; ts: number }[];
+  /** 当天身体线索(与 body.ts 同源的类型→cue 映射) */
+  body_cues: { cue: string; evidence: string }[];
+  /** 当天对话的一两句蒸馏;当天没聊 → null */
+  turns_summary: string | null;
+  /** 当天对话轮数 */
+  turn_count: number;
+}
+
+/** 一张记忆卡(按 cup_id + 本地日存,天翻页时 UPSERT)。 */
+export interface MemoryCard {
+  cup_id: string;
+  /** 本地日 'YYYY-MM-DD'(dayKey() 产出) */
+  date: string;
+  details: MemoryCardDetails;
+  /** 封存时刻(ms) */
+  built_at: number;
+}
+
 /** 日聚合(对应架构 §5.2 daily_agg)。 */
 export interface DailyAgg {
   cup_id: string;

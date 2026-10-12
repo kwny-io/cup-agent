@@ -60,6 +60,7 @@ import {
 } from '../core/social/types.ts';
 import { MemoryProfileStore, type ProfileStore } from '../core/traits.ts';
 import { computePersonality, traitRecord } from '../core/personality.ts';
+import { closeDayCard } from '../core/memory-cards.ts';
 
 /** 用户提问的长度上限(超了直接 400,别灌进提示词) */
 const MAX_QUESTION_CHARS = 500;
@@ -185,7 +186,7 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
     return await socialTeamRoute(req, res, deps);
   }
 
-  const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|profile)$/);
+  const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|profile|memory)$/);
   if (!m) {
     send(res, 404, { error: 'not found', path });
     return;
@@ -222,6 +223,8 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
       return await personalityHistoryRoute(res, deps, cupId, url);
     case 'profile':
       return await profileRoute(req, res, deps, cupId);
+    case 'memory':
+      return await memoryRoute(req, res, deps, cupId, url);
   }
 }
 
@@ -859,6 +862,49 @@ async function profileRoute(
 }
 
 const PROFILE_NICKNAME_MAX = 24;
+
+/** 记忆卡回看的天数上限(与 recall 工具同口径;有界,别把一个月灌回来) */
+const MEMORY_DAYS_MAX = 30;
+const MEMORY_DAYS_DEFAULT = 7;
+
+/**
+ * 长期记忆(第 3 阶段)—— 读端。`GET /cups/:id/memory`
+ *   · `?day=YYYY-MM-DD` → 只取那天
+ *   · `?recent=N`(≤30,默认 7)→ 最近 N 天(只含有卡的天)
+ *   · `?build=1` → 先按需补建那天的卡(那天有数据/对话才建),再返回
+ *
+ * 返回 `{ cup_id, days: MemoryCard[] }`。**只读**(build=1 会写一张卡,但仍是幂等的封存)。
+ * 三档删除(第 4 阶段)会在这条路由上加 DELETE。
+ */
+async function memoryRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+  url: URL,
+): Promise<void> {
+  if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'use GET' });
+
+  const dayParam = url.searchParams.get('day');
+  const build = url.searchParams.get('build') === '1';
+  const memory = deps.chatMemory!;
+
+  if (dayParam) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayParam)) {
+      return send(res, 400, { error: 'day 需为 YYYY-MM-DD' });
+    }
+    if (build) await closeDayCard(deps.store, memory, cupId, dayParam, Date.now());
+    const card = await deps.store.memoryCard(cupId, dayParam);
+    return send(res, 200, { cup_id: cupId, days: card ? [card] : [] });
+  }
+
+  const raw = Number(url.searchParams.get('recent'));
+  const days = Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), MEMORY_DAYS_MAX) : MEMORY_DAYS_DEFAULT;
+  const today = dayKey(Date.now());
+  if (build) await closeDayCard(deps.store, memory, cupId, today, Date.now());
+  const cards = await deps.store.recentMemoryCards(cupId, today, days);
+  send(res, 200, { cup_id: cupId, days: cards });
+}
 
 /** 由当下日聚合现算派生性格快照(与战报/性格史同一口径) */
 async function currentTraits(

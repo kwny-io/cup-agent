@@ -24,6 +24,7 @@ import type { ChatStore } from './chat/memory.ts';
 import { runChat } from './chat/agent.ts';
 import { distillProfile } from './chat/distill.ts';
 import { BODY_PROMPT_INTRO } from './chat/prompt.ts';
+import { maybeCloseDay } from './memory-cards.ts';
 import { abandonedCue, bodyCueFromEvents, bodyPrompt, type BodyCue, type BodyCueHit } from './chat/body.ts';
 import { getTool, type ToolCtx } from './chat/tools.ts';
 import type { LiveHub } from '../api/live.ts';
@@ -63,6 +64,8 @@ export interface ProactiveDeps {
 export class ProactiveScheduler {
   private readonly deps: ProactiveDeps;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** 每杯最后一次"天翻页"已封到的日子 —— 免得同一张记忆卡被反复 UPSERT(见 memory-cards.ts) */
+  private readonly lastClosedDay = new Map<string, string>();
 
   constructor(deps: ProactiveDeps) {
     this.deps = deps;
@@ -89,6 +92,7 @@ export class ProactiveScheduler {
   async tick(nowMs = Date.now()): Promise<ChatAnswer[]> {
     const fired: ChatAnswer[] = [];
     for (const cupId of this.deps.cups()) {
+      await this.maybeCloseDay(cupId, nowMs); // 天翻页 → 封存昨天那张记忆卡(幂等)
       await this.maybeDistill(cupId, nowMs); // 先推进长期画像(与"要不要开口"无关)
       // 优先级:身体语料(刚被摔/烫/没电/被忘)> 欠水提醒。
       // 两者**共用同一个冷却**(T16):一旦开口,最近 2h 内都不再说第二句。
@@ -132,6 +136,25 @@ export class ProactiveScheduler {
       if (recent[i]!.role === 'proactive') return recent[i]!.ts;
     }
     return 0;
+  }
+
+  /**
+   * 天翻页:若"今天"已不是上次封存的日子,封存**昨天**那张记忆卡(幂等)。
+   * 迟/重 tick 都安全(封的是一确定的日子)。出错 → 记日志不中断巡检。
+   */
+  private async maybeCloseDay(cupId: string, nowMs: number): Promise<void> {
+    try {
+      const closed = await maybeCloseDay(
+        this.deps.store,
+        this.deps.memory,
+        cupId,
+        nowMs,
+        this.lastClosedDay.get(cupId) ?? null,
+      );
+      this.lastClosedDay.set(cupId, closed);
+    } catch (err) {
+      this.deps.log(`记忆卡封存失败[${cupId}]: ${(err as Error).message}`, 'warn');
+    }
   }
 
   /** 攒够新轮 → 蒸一次长期画像。未攒够 → no-op;出错 → 记日志不中断巡检 */
