@@ -46,6 +46,7 @@ import type { ChatLlm } from '../core/chat/types.ts';
 import { MemoryChatStore, type ChatStore } from '../core/chat/memory.ts';
 import { ingestEnvelope } from '../ingest/http-adapter.ts';
 import { MemoryAccountsStore } from '../core/social/accounts.ts';
+import type { ClaimService } from '../core/social/claim.ts';
 import { bearerToken, login, logout, register, resolveSession } from '../core/social/auth.ts';
 import { makePack, normalizePack } from '../core/social/packs.ts';
 import { teamStreak } from '../core/social/streak.ts';
@@ -96,6 +97,13 @@ export interface ApiDeps {
   profiles?: ProfileStore;
   /** 首个管理员引导邮箱(env CUP_ADMIN_EMAIL);注册命中即 role='admin' */
   adminEmail?: string;
+  /** 可信绑定核验(claim code);见 core/social/claim.ts */
+  claims?: ClaimService;
+  /**
+   * 绑定杯子须出示一次性 claim code(默认 false → 只校验 cup_id 形状,与旧行为一致)。
+   * 设备/模拟器两半验收后由用户开。
+   */
+  requireClaim?: boolean;
   log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
 }
 
@@ -572,6 +580,15 @@ async function socialCupBindRoute(
   const cupId = typeof raw === 'string' ? raw.trim() : '';
   if (cupId.length === 0 || cupId.length > 64) {
     return send(res, 400, { error: 'cup_id 不合法' });
+  }
+  // 可信绑定(R18,开关默认关):开了则必须出示设备一次性 claim code 才能绑。
+  // 缺/过期/已用/不匹配/超失败上限 → **一律同一 403**,不给 oracle 区分失败原因。
+  if (deps.requireClaim === true) {
+    const claimCode = typeof (body as { claim_code?: unknown }).claim_code === 'string'
+      ? ((body as { claim_code: string }).claim_code)
+      : '';
+    const ok = deps.claims ? await deps.claims.verify(cupId, claimCode) : false;
+    if (!ok) return send(res, 403, { error: '杯子绑定凭证无效' });
   }
   await deps.accounts!.setCup(me.user_id, cupId);
   send(res, 200, { cup_id: cupId });

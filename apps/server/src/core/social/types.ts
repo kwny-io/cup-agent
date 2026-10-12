@@ -83,6 +83,25 @@ export interface Friendship {
 }
 
 /**
+ * 设备一次性 claim code(风险 R18 的修法,见 `claim.ts` 头部长注)。
+ *
+ * **PK = device_id**:本项目双形体(杯盖 + 底座)共用 `cup_id`、`device_id` 不同;若 PK=cup_id
+ * 两具身体每次上电互踩同一行、随机一具的码永久报废。绑定按 `cup_id` 查**任一**活跃行即可。
+ *
+ * 只存 `HMAC-SHA256(规范化码, 服务端 pepper)` —— **明文码绝不落盘**;`issued_at` 来自设备
+ * (未认证通道,只做审计/展示),`expires_at` 一律**服务端时钟**算(防伪造未来 = 永生码)。
+ */
+export interface CupClaim {
+  device_id: string;
+  cup_id: string;
+  claim_hash: string;
+  issued_at: number;
+  expires_at: number;
+  /** 用过即打戳(一次性);`undefined` = 未用。重发同一码**不**重置 */
+  used_at?: number;
+}
+
+/**
  * 账号 / 会话 / 市场 / 好友的统一存储口。**全方法返回 Promise** —— 第 1 阶段
  * 异步化(为第 2 阶段换 Postgres 实现铺路)。内存实现无真实 I/O,加 `async` 即可。
  */
@@ -114,6 +133,15 @@ export interface AccountsStore {
   // ── 好友 ──
   addFriend(a: string, b: string): Promise<void>;
   friends(userId: string): Promise<string[]>;
+
+  // ── 可信绑定(claim code;见 claim.ts)──
+  /** 记 / 覆盖一台设备的 claim(**PK=device_id**);首哈希为准由 ClaimService 把关 */
+  putClaim(c: CupClaim): Promise<void>;
+  claimByDevice(deviceId: string): Promise<CupClaim | null>;
+  /** 该 cup 名下所有 claim(双形体 → 可能多行);绑定按此命中任一活跃行 */
+  claimsByCup(cupId: string): Promise<CupClaim[]>;
+  /** 标记一次性码已用(从未用 → 打戳);**不复活**已用行 */
+  markClaimUsed(deviceId: string, usedAt: number): Promise<void>;
 
   flush(): Promise<void>;
 }

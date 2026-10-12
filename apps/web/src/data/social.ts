@@ -116,7 +116,12 @@ export class CloudSocial implements SocialApi {
     if (t) headers['authorization'] = `Bearer ${t}`;
     if (withApiKey && this.apiKey !== '') headers['x-api-key'] = this.apiKey;
     try {
-      const r = await this.fetchImpl(`${this.apiBase}${path}`, {
+      // 必须**裸调**:`this.fetchImpl(...)` 会把 this 绑成 CloudSocial,浏览器 fetch
+      // 只认 Window/undefined 接收者,否则抛 `TypeError: Illegal invocation` ——
+      // 被下面的 catch 吞成 status:0 → 显示"连不上后端"。注入的假 fetch 不在乎 this,
+      // 故单测照绿,只有真浏览器会炸(踩过)。
+      const callFetch = this.fetchImpl;
+      const r = await callFetch(`${this.apiBase}${path}`, {
         method,
         headers,
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -274,8 +279,10 @@ export class CloudSocial implements SocialApi {
     return (r.data as { friend?: FriendView }).friend ?? null;
   }
 
-  async bindCup(cupId: string): Promise<boolean> {
-    const r = await this.req('POST', '/social/cup', { cup_id: cupId });
+  async bindCup(cupId: string, claimCode?: string): Promise<boolean> {
+    const body: { cup_id: string; claim_code?: string } = { cup_id: cupId };
+    if (claimCode !== undefined && claimCode !== '') body.claim_code = claimCode;
+    const r = await this.req('POST', '/social/cup', body);
     return r.ok;
   }
 

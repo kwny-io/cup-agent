@@ -13,6 +13,7 @@ import {
   normalizeEmail,
   type Account,
   type AccountsStore,
+  type CupClaim,
   type Friendship,
   type PackStatus,
   type PersonaPack,
@@ -27,10 +28,12 @@ interface SocialState {
   /** userId → 已订阅 packId 列表 */
   subscriptions: Record<string, string[]>;
   friends: Friendship[];
+  /** device_id → claim(可信绑定;PK=device_id,见 types.ts 的 CupClaim 注) */
+  claims: Record<string, CupClaim>;
 }
 
 function emptyState(): SocialState {
-  return { accounts: {}, sessions: {}, packs: {}, subscriptions: {}, friends: [] };
+  return { accounts: {}, sessions: {}, packs: {}, subscriptions: {}, friends: [], claims: {} };
 }
 
 function friendKey(a: string, b: string): string {
@@ -47,6 +50,7 @@ export class MemoryAccountsStore implements AccountsStore {
   private packs = new Map<string, PersonaPack>();
   private subs = new Map<string, Set<string>>(); // userId → packIds
   private friendEdges = new Map<string, Friendship>(); // pairKey → friendship
+  private claims = new Map<string, CupClaim>(); // deviceId → claim
 
   async createAccount(a: Account): Promise<void> {
     this.accounts.set(a.user_id, a);
@@ -137,6 +141,23 @@ export class MemoryAccountsStore implements AccountsStore {
     return out;
   }
 
+  async putClaim(c: CupClaim): Promise<void> {
+    this.claims.set(c.device_id, c);
+  }
+
+  async claimByDevice(deviceId: string): Promise<CupClaim | null> {
+    return this.claims.get(deviceId) ?? null;
+  }
+
+  async claimsByCup(cupId: string): Promise<CupClaim[]> {
+    return [...this.claims.values()].filter((c) => c.cup_id === cupId);
+  }
+
+  async markClaimUsed(deviceId: string, usedAt: number): Promise<void> {
+    const c = this.claims.get(deviceId);
+    if (c && c.used_at === undefined) this.claims.set(deviceId, { ...c, used_at: usedAt });
+  }
+
   async flush(): Promise<void> {
     // 内存实现无持久,no-op
   }
@@ -154,6 +175,7 @@ export class FileAccountsStore implements AccountsStore {
       packs: p.packs ?? {},
       subscriptions: p.subscriptions ?? {},
       friends: p.friends ?? [],
+      claims: p.claims ?? {},
     }));
   }
 
@@ -269,6 +291,27 @@ export class FileAccountsStore implements AccountsStore {
       else if (f.b_user_id === userId) out.push(f.a_user_id);
     }
     return out;
+  }
+
+  async putClaim(c: CupClaim): Promise<void> {
+    this.s.claims[c.device_id] = c;
+    this.file.flushSoon();
+  }
+
+  async claimByDevice(deviceId: string): Promise<CupClaim | null> {
+    return this.s.claims[deviceId] ?? null;
+  }
+
+  async claimsByCup(cupId: string): Promise<CupClaim[]> {
+    return Object.values(this.s.claims).filter((c) => c.cup_id === cupId);
+  }
+
+  async markClaimUsed(deviceId: string, usedAt: number): Promise<void> {
+    const c = this.s.claims[deviceId];
+    if (c && c.used_at === undefined) {
+      this.s.claims[deviceId] = { ...c, used_at: usedAt };
+      this.file.flushSoon();
+    }
   }
 
   async flush(): Promise<void> {

@@ -21,6 +21,7 @@ import { FileChatStore } from './core/chat/file-memory.ts';
 import { FilePersistence } from './core/persist.ts';
 import { FileAccountsStore, MemoryAccountsStore } from './core/social/accounts.ts';
 import type { AccountsStore } from './core/social/types.ts';
+import { ClaimService, resolveClaimPepper } from './core/social/claim.ts';
 import { FileProfileStore, MemoryProfileStore, type ProfileStore } from './core/traits.ts';
 import { ProactiveScheduler } from './core/proactive.ts';
 import { randomBytes } from 'node:crypto';
@@ -80,6 +81,13 @@ export interface AppOptions {
    * role='admin'。**不新增注册口子**:管理员也只能走正常注册。
    */
   adminEmail?: string;
+  /**
+   * 绑定杯子须出示设备一次性 claim code(可信绑定,风险 R18)。
+   * **默认 false** → 绑定行为与从前一致(零回归);设备/模拟器两半验收后由用户开。
+   */
+  requireClaim?: boolean;
+  /** claim 的 pepper;不给则由 env `CUP_CLAIM_PEPPER` / dataDir 解析(见 resolveClaimPepper) */
+  claimPepper?: Buffer;
   log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
 }
 
@@ -93,6 +101,8 @@ export interface App {
   chatMemory: ChatStore;
   /** 账号 / 会话 / 市场 / 社交存储(文件或内存) */
   accounts: AccountsStore;
+  /** 可信绑定核验(claim code;见 core/social/claim.ts) */
+  claims: ClaimService;
   /** 人格档案存储(#72:昵称 + 派生性格快照) */
   profiles: ProfileStore;
   /** 文件持久化句柄(未启用 dataDir 时为 null) */
@@ -135,6 +145,9 @@ export function createApp(opts: AppOptions = {}): App {
   // 人格档案(#72):挂在 state.json 的 traits 段上(无 dataDir 则内存)
   const profiles =
     opts.profiles ?? (persist ? new FileProfileStore(persist) : new MemoryProfileStore());
+  // 可信绑定(claim code):收码规则厚、路由薄;pepper 由 env/dataDir 解析(明文码绝不落盘)。
+  const claimPepper = opts.claimPepper ?? resolveClaimPepper(opts.dataDir);
+  const claims = new ClaimService({ store: accounts, pepper: claimPepper, log });
   const cups = opts.cups ?? [];
 
   // 主动开口(P5):只有显式开启才起 —— 默认关,免得测试/离线环境里乱说话。
@@ -180,6 +193,8 @@ export function createApp(opts: AppOptions = {}): App {
     accounts,
     profiles,
     adminEmail: opts.adminEmail,
+    claims,
+    requireClaim: opts.requireClaim,
     log,
   });
   live.attach(server);
@@ -196,6 +211,7 @@ export function createApp(opts: AppOptions = {}): App {
     chatLlm,
     chatMemory,
     accounts,
+    claims,
     profiles,
     persist,
     proactive,
@@ -226,8 +242,12 @@ export function createApp(opts: AppOptions = {}): App {
     },
   };
 
+  // hello 里的 claim code → 落库(未开 requireClaim 时也照收,不影响绑定行为)。
+  const onHello = (deviceId: string, hello: Record<string, unknown>): Promise<void> =>
+    claims.noteHello(deviceId, hello);
+
   if (opts.simUrl) {
-    adapter = startSimAdapter({ url: opts.simUrl, pipeline, log });
+    adapter = startSimAdapter({ url: opts.simUrl, pipeline, log, onHello });
     app.adapter = adapter;
   }
 
@@ -236,7 +256,7 @@ export function createApp(opts: AppOptions = {}): App {
     const transport =
       opts.mqttTransport ??
       createNodeMqttTransport({ url: opts.mqttUrl, log, clientId: opts.mqttClientId });
-    mqtt = startMqttAdapter({ url: opts.mqttUrl, pipeline, commands, transport, log });
+    mqtt = startMqttAdapter({ url: opts.mqttUrl, pipeline, commands, transport, log, onHello });
     app.mqtt = mqtt;
   }
 

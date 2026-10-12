@@ -406,7 +406,8 @@ export interface SocialApi {
   // ── 杯子社交(#74)──
   listFriends(): Promise<FriendView[]>;
   addFriend(email: string): Promise<FriendView | null>;
-  bindCup(cupId: string): Promise<boolean>;
+  /** 绑定杯子;服务端开了可信绑定(--require-claim)时必须给设备上抄的一次性 claimCode */
+  bindCup(cupId: string, claimCode?: string): Promise<boolean>;
   unbindCup(): Promise<boolean>;
   getTeam(): Promise<TeamState | null>;
 }

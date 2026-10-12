@@ -20,6 +20,12 @@ export interface SimAdapterOptions {
   pipeline: Pipeline;
   /** 日志出口;默认 console。测试里可换成收集器 */
   log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  /**
+   * 收到 hello 握手帧时回调(可信绑定用,见 core/social/claim.ts)。
+   * WS 出口**没有 topic**,故 deviceId 只能取自 hello 自报的 `device_id` 字段(模拟器为本地开发路径,
+   * 信任级别与整条 WS 连接一致);缺字段 → 传空串,ClaimService 会当 no-op。
+   */
+  onHello?: (deviceId: string, hello: Record<string, unknown>) => void | Promise<void>;
 }
 
 export interface SimAdapterHandle {
@@ -96,6 +102,18 @@ export function startSimAdapter(opts: SimAdapterOptions): SimAdapterHandle {
     // 握手帧 {kind:'hello'} 不是契约报文,静默放行(模拟器起手发它)
     if (raw && typeof raw === 'object' && (raw as { kind?: string }).kind === 'hello') {
       log('[sim-adapter] 收到 hello 握手');
+      // 可信绑定:WS 出口无 topic,deviceId 只能取自 hello 自报字段(见 SimAdapterOptions.onHello)。
+      if (opts.onHello) {
+        const h = raw as Record<string, unknown>;
+        const deviceId = typeof h.device_id === 'string' ? h.device_id : '';
+        try {
+          void Promise.resolve(opts.onHello(deviceId, h)).catch((err: unknown) => {
+            log(`[sim-adapter] onHello 异常:${err instanceof Error ? err.message : String(err)}`, 'error');
+          });
+        } catch (err: unknown) {
+          log(`[sim-adapter] onHello 异常:${err instanceof Error ? err.message : String(err)}`, 'error');
+        }
+      }
       return;
     }
 

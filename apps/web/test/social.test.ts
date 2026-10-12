@@ -53,6 +53,23 @@ function router(
 
 const BASE = 'http://localhost:8788';
 
+test('回归:fetchImpl 必须被裸调,接收者不能是 CloudSocial(浏览器 fetch 会抛 Illegal invocation)', async () => {
+  // 真浏览器里 window.fetch 只认 Window/undefined 接收者;`this.fetchImpl(...)`
+  // 会把 this 绑成 CloudSocial → 抛 TypeError 被 catch 吞成 offline("连不上后端")。
+  // 注入的假 fetch 默认不在乎 this,故这里**显式复刻**浏览器的检查,才挡得住回退。
+  let receiver: unknown = 'not-called';
+  const impl = function (this: unknown) {
+    receiver = this;
+    return Promise.resolve(new Response(JSON.stringify({ token: 't', user: {} }), { status: 200 }));
+  } as unknown as typeof fetch;
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  await s.register('a@b.c', 'pw123456');
+  assert.ok(
+    receiver !== s,
+    'fetch 不得以 CloudSocial 为接收者被调用(否则浏览器抛 Illegal invocation)',
+  );
+});
+
 test('register:成功后存令牌,后续请求带 Authorization: Bearer', async () => {
   const cap: Cap[] = [];
   const store = memStorage();
@@ -196,6 +213,17 @@ test('unbindCup:用 DELETE;bindCup:POST 带 cup_id', async () => {
   assert.equal(cap[0]?.method, 'POST');
   assert.equal(cap[0]?.body, JSON.stringify({ cup_id: 'cup-Y' }));
   assert.equal(cap[1]?.method, 'DELETE');
+});
+
+test('bindCup:给了 claim_code 才带上(可信绑定开关开时用)', async () => {
+  const cap: Cap[] = [];
+  const impl = router([{ match: (u) => u.includes('/social/cup'), json: { cup_id: 'cup-Y' } }], cap);
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+
+  await s.bindCup('cup-Y', 'ABCD-2345');
+  assert.equal(cap[0]?.body, JSON.stringify({ cup_id: 'cup-Y', claim_code: 'ABCD-2345' }));
+  await s.bindCup('cup-Z', ''); // 空串 = 不带字段(与开关关时的旧形状一致)
+  assert.equal(cap[1]?.body, JSON.stringify({ cup_id: 'cup-Z' }));
 });
 
 test('addFriend / getTeam / listFriends:形状对不对', async () => {

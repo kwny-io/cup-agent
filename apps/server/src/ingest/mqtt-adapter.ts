@@ -62,6 +62,11 @@ export interface MqttAdapterOptions {
   uplinkTopic?: string;
   /** 覆盖下行 topic 生成;默认 downTopic */
   downlinkTopic?: (deviceId: string) => string;
+  /**
+   * 收到 hello 握手帧时回调(可信绑定用 —— 设备在这帧里捎一次性 claim code,见 core/social/claim.ts)。
+   * deviceId 来自 topic(可信),hello 是帧体(未认证)。可不给 → hello 仍照旧静默放行。
+   */
+  onHello?: (deviceId: string, hello: Record<string, unknown>) => void | Promise<void>;
 }
 
 export interface MqttAdapterHandle {
@@ -98,6 +103,19 @@ export function startMqttAdapter(opts: MqttAdapterOptions): MqttAdapterHandle {
     // 握手帧 {kind:'hello'} 不是契约报文,静默放行(与 sim-adapter 同处理)
     if (raw && typeof raw === 'object' && (raw as { kind?: string }).kind === 'hello') {
       log('[mqtt-adapter] 收到 hello 握手');
+      // 可信绑定:把 hello 交给 claim 服务(deviceId 取自 topic)。有 claim 字段才落库,
+      // 无字段(旧形 hello)= no-op。不 await:入站不该为一次落库阻塞;尾挂 catch 防未捕获拒绝。
+      if (opts.onHello) {
+        try {
+          void Promise.resolve(opts.onHello(deviceId, raw as Record<string, unknown>)).catch(
+            (err: unknown) => {
+              log(`[mqtt-adapter] onHello 异常:${err instanceof Error ? err.message : String(err)}`, 'error');
+            },
+          );
+        } catch (err: unknown) {
+          log(`[mqtt-adapter] onHello 异常:${err instanceof Error ? err.message : String(err)}`, 'error');
+        }
+      }
       return;
     }
 

@@ -11,3 +11,6 @@ dist/
 # 本机私有配置(含绝对路径的权限白名单)
 .claude/settings.local.json
 .claude/*.lock
+
+# 本机 git worktree(窗口 B 的 pg 线隔离;不进主树)
+/.claude/worktrees/

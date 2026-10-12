@@ -104,6 +104,20 @@ export {
 } from './core/social/packs.ts';
 export { teamStreak, type TeamStreakResult } from './core/social/streak.ts';
 export {
+  ClaimService,
+  normalizeClaim,
+  hashClaim,
+  claimHashEqual,
+  resolveClaimPepper,
+  CLAIM_ALPHABET,
+  CLAIM_LEN,
+  CLAIM_TTL_MS,
+  CLAIM_MAX_FAILURES,
+  CLAIM_LOCK_MS,
+  type HelloFrame,
+  type ClaimServiceOptions,
+} from './core/social/claim.ts';
+export {
   normalizeEmail,
   friendPair,
   toPublicUser,
@@ -117,6 +131,7 @@ export {
   type Session,
   type Role,
   type PackStatus,
+  type CupClaim,
 } from './core/social/types.ts';
 export { MockChatLlm, NullChatLlm, callTool, say } from './core/chat/mock.ts';
 export {

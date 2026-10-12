@@ -32,6 +32,8 @@ interface Args {
   allowUnauth: boolean;
   /** --read-auth:读端点也要 x-api-key(可选层,默认读开放) */
   readAuth: boolean;
+  /** --require-claim:绑定杯子须出示设备一次性 claim code(可信绑定;默认关) */
+  requireClaim: boolean;
   /** 画像蒸馏阈值(自上次蒸馏后新增多少轮才再蒸);null = 用 distill.ts 默认值 */
   profileMinTurns: number | null;
   /** 日界时区(IANA,如 Asia/Shanghai);null = 服务器本地时区 */
@@ -48,6 +50,7 @@ function parseArgs(argv: string[]): Args {
     cups: [],
     allowUnauth: false,
     readAuth: false,
+    requireClaim: process.env.CUP_REQUIRE_CLAIM === '1' || process.env.CUP_REQUIRE_CLAIM === 'true',
     profileMinTurns: null,
     tz: process.env.CUP_TZ ?? null,
   };
@@ -82,6 +85,9 @@ function parseArgs(argv: string[]): Args {
         break;
       case '--read-auth':
         a.readAuth = true;
+        break;
+      case '--require-claim':
+        a.requireClaim = true;
         break;
       case '--profile-min-turns': {
         const n = Number(v);
@@ -120,6 +126,10 @@ function parseArgs(argv: string[]): Args {
         console.log('');
         console.log('账号 / 会话(多用户地基;POST /auth/register|login|logout,GET /auth/me):');
         console.log('  CUP_ADMIN_EMAIL=<邮箱>  该邮箱注册即得管理员(市场审核后台);不设则无管理员。');
+        console.log('');
+        console.log('可信绑定(风险 R18;绑定杯子须出示设备一次性 claim code):');
+        console.log('  --require-claim / CUP_REQUIRE_CLAIM=1  开启(默认关 → 绑定行为与从前一致)。');
+        console.log('  CUP_CLAIM_PEPPER=<base64>  码哈希的 pepper;不设则由 dataDir/claim-pepper 落盘。');
         console.log('');
         console.log('人格档案 / 市场 / 社交(需登录会话:Authorization: Bearer <token>):');
         console.log('  GET|PUT /cups/:id/profile       人格档案(昵称 + 派生性格快照;#72)');
@@ -193,6 +203,7 @@ async function main(): Promise<void> {
     allowUnauth: args.allowUnauth,
     readAuth: args.readAuth,
     adminEmail: process.env.CUP_ADMIN_EMAIL,
+    requireClaim: args.requireClaim,
   });
   const port = await app.listen(args.port);
 
@@ -226,6 +237,7 @@ async function main(): Promise<void> {
   console.log(
     `  主动开口: ${args.proactive ? `开(照看 ${args.cups.join(', ') || '无 —— 加 --cup <id>'})` : '关(--proactive 开启)'}`,
   );
+  console.log(`  可信绑定: ${args.requireClaim ? '开(绑定须设备一次性 claim code)' : '关(--require-claim / CUP_REQUIRE_CLAIM=1 开启)'}`);
   console.log(
     `  画像蒸馏: ${args.proactive ? `随主动开口巡检(${args.profileMinTurns ?? '默认'} 新轮起蒸)` : '关(随 --proactive 开启)'}`,
   );
