@@ -15,6 +15,8 @@ import { typicalDay, smoke } from './scenarios/day.ts';
 import { startWsServer } from './ws/server.ts';
 import { startMqttOutput } from './mqtt/server.ts';
 import { parseControl, applyControl } from './core/control.ts';
+import { deriveSeed64 } from './util/rng.ts';
+import { generateClaim, buildHello, type HelloFrame } from './util/claim.ts';
 import type { CupEvent } from '@cup/contract';
 
 interface Args {
@@ -147,10 +149,15 @@ function main(): void {
     console.log(`[控制] ${parsed.cmd.type} → ${outcome.detail}`);
   };
 
-  const ws = args.wsPort !== null ? startWsServer(args.wsPort, onControl) : null;
+  // 可信绑定的设备半:造一枚与固件同算法的一次性 claim code + 真机形状的 hello 帧。
+  // 两个出口共用**同一枚** hello(同一设备对前后端报同一枚码,否则后端去重会看到两枚而困惑)。
+  const claim = generateClaim(deriveSeed64(args.seed, 1));
+  const hello: HelloFrame = buildHello(engine.config.lidId, engine.config.cupId, claim, Date.now());
+
+  const ws = args.wsPort !== null ? startWsServer(args.wsPort, { onControl, hello: () => hello }) : null;
   const mqtt =
     args.mqttUrl !== null
-      ? startMqttOutput({ url: args.mqttUrl, log: (m) => console.log(m) })
+      ? startMqttOutput({ url: args.mqttUrl, log: (m) => console.log(m), hello })
       : null;
 
   // 出口接线:--ws 与 --mqtt 可同给(前端看 WS、后端吃 MQTT)→ fan-out 到两个出口;
@@ -170,6 +177,7 @@ function main(): void {
   console.log(`模拟器启动 | 场景=${args.scenario} 天数=${args.days} 加速=${args.scale}× seed=${args.seed}`);
   console.log(`虚拟起点=${new Date(startMs).toLocaleString()}`);
   console.log(`设备 lid=${engine.config.lidId} base=${engine.config.baseId} cup=${engine.config.cupId}`);
+  console.log(`设备绑定码(可信绑定用,一次性): ${claim}  ← 在 App 里输入以绑定这只杯`);
   if (ws) console.log(`WebSocket: ws://localhost:${args.wsPort}`);
   if (mqtt) console.log(`MQTT: ${args.mqttUrl}(出口 ws+mqtt fan-out=${ws && mqtt ? '开' : '关'})`);
   console.log('─'.repeat(64));

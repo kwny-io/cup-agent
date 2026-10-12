@@ -16,4 +16,6 @@ export type { MqttOutput, MqttOutputOptions } from './mqtt/server.ts';
 export { parseControl, applyControl } from './core/control.ts';
 export type { ControlCommand, ParseControlResult, ControlOutcome } from './core/control.ts';
 export { typicalDay, smoke } from './scenarios/day.ts';
-export { createRng, gaussian, uniform } from './util/rng.ts';
+export { createRng, gaussian, uniform, deriveSeed64 } from './util/rng.ts';
+export { generateClaim, buildHello, CLAIM_ALPHABET, CLAIM_LEN } from './util/claim.ts';
+export type { HelloFrame } from './util/claim.ts';

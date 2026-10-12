@@ -18,6 +18,7 @@
 import { connect, type MqttClient } from 'mqtt';
 import type { Frame } from '../core/engine.ts';
 import { toFrames } from '../ws/server.ts';
+import type { HelloFrame } from '../util/claim.ts';
 
 /** 模拟器默认设备 id(与契约 §2 的 device_id 正则一致;`lid-XXX` / `base-XXX`)。 */
 const DEFAULT_LID_ID = 'lid-A1B2C3';
@@ -35,6 +36,12 @@ export interface MqttOutputOptions {
   /** 订阅哪些设备的 down topic;默认模拟器的固定三 id 里的 lid/base */
   lidId?: string;
   baseId?: string;
+  /**
+   * 握手帧:连上 broker 后经 `dev/<lidId>/up` 发一次,生产真机形状(镜像固件 mqtt_uplink.c)。
+   * 给可信绑定用 —— 传带 `{cup_id, device_id, claim, issued_at}` 的帧(见 util/claim.ts),
+   * 后端 mqtt-adapter 会把它交给绑定校验(pg 阶段 4 前置)。不给则维持旧形 `{kind:'hello',v:1}`。
+   */
+  hello?: HelloFrame | { kind: 'hello'; v: 1 };
 }
 
 /** 某设备的上行 topic(设备 → 后端);与后端 mqtt-adapter 的 UPLINK_TOPIC(`dev/+/up`)对齐。 */
@@ -52,6 +59,7 @@ export function startMqttOutput(opts: MqttOutputOptions): MqttOutput {
   const lidId = opts.lidId ?? DEFAULT_LID_ID;
   const baseId = opts.baseId ?? DEFAULT_BASE_ID;
   const downTopics = [downTopic(lidId), downTopic(baseId)];
+  const hello = opts.hello ?? { kind: 'hello', v: 1 };
 
   const client: MqttClient = connect(opts.url, {
     clientId: `sim-${lidId}`, // --mqtt 只跑一个进程,id 唯一即可
@@ -68,8 +76,8 @@ export function startMqttOutput(opts: MqttOutputOptions): MqttOutput {
       if (err) log(`[mqtt] 订阅失败: ${err.message}`);
       else log(`[mqtt] 已订阅 ${downTopics.join(', ')}`);
     });
-    // 握手:镜像 WS 出口的 hello(后端 handleLine 对 kind:'hello' 在 schema 校验前放行)
-    client.publish(upTopic(lidId), JSON.stringify({ kind: 'hello', v: 1 }), {
+    // 握手:真机形状的 hello(后端 handleLine 对 kind:'hello' 在 schema 校验前放行)
+    client.publish(upTopic(lidId), JSON.stringify(hello), {
       qos: 1,
       retain: false,
     });

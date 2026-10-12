@@ -143,7 +143,7 @@ test('真 broker:broadcast 一帧 → 三个信封各自上 dev/<device_id>/up �
       (JSON.parse(m.payload) as { kind?: string }).kind !== 'hello';
     await waitUntil(() => rig.msgs.filter(isEnvelope).length >= 3);
 
-    // M2 要求:连接后向 dev/<lid>/up 发一次 {"kind":"hello","v":1}(镜像 WS 出口)
+    // M2 要求:连接后向 dev/<lid>/up 发一次 hello 握手(镜像 WS 出口;真机形状见固件 mqtt_uplink.c)
     const hello = rig.msgs.find(
       (m) => m.topic === `dev/${LID}/up` && (JSON.parse(m.payload) as { kind?: string }).kind === 'hello',
     );
