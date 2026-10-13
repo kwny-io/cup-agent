@@ -13,23 +13,49 @@ import { useCupData } from './data/useCupData.ts';
 import { useChat } from './data/useChat.ts';
 import { useSession } from './data/useSession.ts';
 import { currentStateLabel } from './data/simulator.ts';
-import type { DataSource } from './data/source.ts';
+import type { DataSource, PublicUser } from './data/source.ts';
 import { Dashboard } from './components/BoardView.tsx';
 import { CupWidget } from './components/CupWidget.tsx';
 import { FloatingCup } from './components/FloatingCup.tsx';
 import { ChatPanel } from './components/ChatPanel.tsx';
 import { CommunityView } from './components/CommunityView.tsx';
 import { AdminPanel } from './components/AdminPanel.tsx';
+import { LogsView } from './components/LogsView.tsx';
 
-type Tab = 'cup' | 'board' | 'chat' | 'community' | 'admin';
+type Tab = 'cup' | 'board' | 'chat' | 'community' | 'admin' | 'logs';
 
-/** 窄屏底部 Tab(顺序即展示顺序);管理台仅在管理员身份下追加 */
+/** 窄屏底部 Tab(顺序即展示顺序);管理台 / 日志 tab 按角色追加(见下) */
 const TABS: { key: Tab; label: string }[] = [
   { key: 'cup', label: '杯子' },
   { key: 'board', label: '看板' },
   { key: 'chat', label: '对话' },
   { key: 'community', label: '社区' },
 ];
+
+/** 管理台 = 仅 admin;日志回看 = admin/ops/reviewer(前端只做"不给按不动的按钮",安全边界在服务端) */
+const canManage = (role?: PublicUser['role']): boolean => role === 'admin';
+const canReadLogs = (role?: PublicUser['role']): boolean =>
+  role === 'admin' || role === 'ops' || role === 'reviewer';
+
+/** 宽屏顶部导航的可见 tab(顺序即展示顺序):看板 / 社区 / 日志 / 管理 */
+function wideNavKeys(role?: PublicUser['role']): Tab[] {
+  const keys: Tab[] = ['board', 'community'];
+  if (canReadLogs(role)) keys.push('logs');
+  if (canManage(role)) keys.push('admin');
+  return keys;
+}
+
+const TAB_LABEL: Record<Tab, string> = {
+  cup: '杯子',
+  board: '看板',
+  chat: '对话',
+  community: '社区',
+  logs: '日志',
+  admin: '管理',
+};
+
+/** 看板族:窄屏下 cup/chat/board 三者都归在看板这一格高亮 */
+const DASH_TABS: Tab[] = ['cup', 'board', 'chat'];
 
 /**
  * ?cloud=<apiBase>  连后端(推荐,M1 之后):如 ?cloud=http://localhost:8788
@@ -100,21 +126,19 @@ export function App() {
           {/* 宽屏没有底部 Tab,给一条顶部导航切看板 / 社区(/ 管理) */}
           {wide && (
             <nav className="flex items-center gap-1">
-              {['board', 'community', ...(session.user?.role === 'admin' ? ['admin' as const] : [])].map(
-                (k) => (
-                  <button
-                    key={k}
-                    onClick={() => setTab(k as Tab)}
-                    className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                      (tab === k || (tab !== 'community' && tab !== 'admin' && k === 'board'))
-                        ? 'bg-cup-deep text-cup-mist'
-                        : 'text-cup-ink-soft hover:bg-cup-foam'
-                    }`}
-                  >
-                    {k === 'board' ? '看板' : k === 'community' ? '社区' : '管理'}
-                  </button>
-                ),
-              )}
+              {wideNavKeys(session.user?.role).map((k) => (
+                <button
+                  key={k}
+                  onClick={() => setTab(k)}
+                  className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                    (tab === k || (DASH_TABS.includes(tab) && k === 'board'))
+                      ? 'bg-cup-deep text-cup-mist'
+                      : 'text-cup-ink-soft hover:bg-cup-foam'
+                  }`}
+                >
+                  {TAB_LABEL[k]}
+                </button>
+              ))}
             </nav>
           )}
         </div>
@@ -151,10 +175,12 @@ export function App() {
       )}
 
       <main className="min-h-0 flex-1 overflow-y-auto">
-        {/* 社区 / 管理:宽窄屏都有(宽屏走顶部导航切过来) */}
+        {/* 社区 / 日志 / 管理:宽窄屏都有(宽屏走顶部导航切过来) */}
         {tab === 'community' ? (
           <CommunityView social={social} session={session} />
-        ) : tab === 'admin' && social && session.user?.role === 'admin' ? (
+        ) : tab === 'logs' && social && canReadLogs(session.user?.role) ? (
+          <LogsView social={social} role={session.user!.role} />
+        ) : tab === 'admin' && social && canManage(session.user?.role) ? (
           <AdminPanel social={social} />
         ) : wide ? (
           <Dashboard
@@ -210,10 +236,11 @@ export function App() {
       {/* 窄屏底部 Tab;宽屏用一个小开关控制悬浮杯显隐 */}
       {!wide ? (
         <nav className="flex border-t border-cup-veil/60 bg-white/80 backdrop-blur">
-          {(session.user?.role === 'admin'
-            ? [...TABS, { key: 'admin' as const, label: '管理' }]
-            : TABS
-          ).map(({ key, label }) => (
+          {[
+            ...TABS,
+            ...(canReadLogs(session.user?.role) ? [{ key: 'logs' as const, label: '日志' }] : []),
+            ...(canManage(session.user?.role) ? [{ key: 'admin' as const, label: '管理' }] : []),
+          ].map(({ key, label }) => (
             <button
               key={key}
               onClick={() => {

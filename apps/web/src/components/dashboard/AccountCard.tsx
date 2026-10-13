@@ -42,8 +42,16 @@ export function AccountCard({ session, enabled }: { session: Session; enabled: b
 
   // 已登录:显示身份 + 登出
   if (session.user) {
+    const roleLabel =
+      session.user.role === 'admin'
+        ? '管理员'
+        : session.user.role === 'ops'
+          ? '运维'
+          : session.user.role === 'reviewer'
+            ? '审核'
+            : '已登录';
     return (
-      <Card title="账号" hint={session.user.role === 'admin' ? '管理员' : '已登录'}>
+      <Card title="账号" hint={roleLabel}>
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium text-cup-ink">
