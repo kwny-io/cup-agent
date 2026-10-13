@@ -9,13 +9,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { Eyes, EYE_STATE_LABEL, type EyeState, type EyeDisposition, type EyeInputs, type FaceOwner } from '../lib/eyes.ts';
 import { renderEyeGrid, EYE_W, EYE_H } from '../lib/eye-render.ts';
-import { Gestures, GESTURE_RESPONSES, GESTURE_LABEL, type Gesture } from '../lib/gesture.ts';
+import { Gestures, GESTURE_RESPONSES, GESTURE_LABEL, latestTapTs, type Gesture } from '../lib/gesture.ts';
 import { FIXED_DT } from '../lib/water.ts';
-import type { BaseTelemetry, LidTelemetry } from '@cup/contract';
+import type { BaseTelemetry, CupEvent, LidTelemetry } from '@cup/contract';
 
 interface Props {
   lid?: LidTelemetry;
   base?: BaseTelemetry;
+  /** 近期事件流 —— 供手势识别器挑出轻磕/长按(契约 tap/long_press) */
+  events?: CupEvent[];
   /** 长期性格底色(后端战报给) */
   disposition?: EyeDisposition;
   /** 显示尺寸(CSS px);缺省 128 = 1:1 */
@@ -28,10 +30,12 @@ const SIP_DROP = 2;
 /** 手势台词 + 强制表情的展示时长(秒):与备忘"每动作 ≤1 句"同气口,数秒后自散 */
 const GESTURE_HOLD_S = 3;
 
-export function EyePreview({ lid, base, disposition = 'normal', size = EYE_W }: Props) {
+export function EyePreview({ lid, base, events, disposition = 'normal', size = EYE_W }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
   const telemetry = useRef<{ lid?: LidTelemetry; base?: BaseTelemetry }>({ lid, base });
   telemetry.current = { lid, base };
+  const eventsRef = useRef<CupEvent[]>(events ?? []);
+  eventsRef.current = events ?? [];
   const dispRef = useRef<EyeDisposition>(disposition);
   dispRef.current = disposition;
   // 状态标签低频更新(只在状态变化时 setState,不随 rAF 抖)
@@ -65,6 +69,8 @@ export function EyePreview({ lid, base, disposition = 'normal', size = EYE_W }: 
     let lastMotion: string | null = null;
     let lastBattery: number | null = null;
     let lastTemp: number | null = null;
+    // 轻磕/长按:已消费到的事件时间戳(契约 tap/long_press;避免同一事件每帧重复喂)
+    let seenTapTs = 0;
     // 上一帧的 lid 快照,用来判"这一帧有没有新东西发生"
     let prevLid: LidTelemetry | undefined;
     let prevBase: BaseTelemetry | undefined;
@@ -116,6 +122,12 @@ export function EyePreview({ lid, base, disposition = 'normal', size = EYE_W }: 
       lastTemp = temp;
 
       // 手势语法 §5.1 #1:从**现有** motion/tilt 遥测边沿切出手势 → ≤1 句 + 1 个表情
+      // 轻磕/长按(契约 tap/long_press 事件)先喂进识别器:挑出新的一次 → noteTap()
+      const tapTs = latestTapTs(eventsRef.current, seenTapTs);
+      if (tapTs !== null) {
+        seenTapTs = tapTs;
+        gestures.noteTap();
+      }
       const gestureHit = gestures.step(dt, { motion: motion ?? 'idle', tiltDeg: l?.tilt_deg ?? 0 });
       if (gestureHit) {
         const resp = GESTURE_RESPONSES[gestureHit];

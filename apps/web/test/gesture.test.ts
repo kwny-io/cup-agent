@@ -8,11 +8,12 @@ import {
   Gestures,
   GESTURE_RESPONSES,
   GESTURE_LABEL,
+  latestTapTs,
   type Gesture,
   type GestureInputs,
 } from '../src/lib/gesture.ts';
 import { EYE_STATE_LABEL, type EyeState } from '../src/lib/eyes.ts';
-import type { MotionState } from '@cup/contract';
+import type { CupEvent, MotionState } from '@cup/contract';
 
 const DT = 1 / 120;
 
@@ -109,13 +110,50 @@ test('放下后马上又动 → 不判 putDown', () => {
   assert.equal(feed(r, 'idle', 1.5, 0), null, '且不应补一个 putDown');
 });
 
-// ── 轻磕/长按(契约 seam)───────────────────────────────────────
+// ── 轻磕/长按(契约 tap/long_press 事件)────────────────────────
 
-test('noteTap()(契约 seam)→ tap(确认)', () => {
+test('noteTap() → tap(确认)', () => {
   const r = g();
   assert.equal(feed(r, 'idle', 0.1), null);
   r.noteTap();
   assert.equal(feed(r, 'idle', 0.1), 'tap');
+});
+
+// ── latestTapTs:从事件流挑出新的轻磕/长按 ───────────────────────
+
+/** 造一个最小 cup 事件(手势类带 duration_ms) */
+function ev(type: CupEvent['type'], ts: number): CupEvent {
+  return {
+    v: 1,
+    cup_id: 'cup-ABC123',
+    device_id: 'lid-ABC123',
+    ts,
+    type,
+    confidence: 1,
+    derived_by: 'lid',
+    ...(type === 'tap' || type === 'long_press' ? { duration_ms: 100 } : {}),
+  } as CupEvent;
+}
+
+test('latestTapTs:无手势事件 → null', () => {
+  assert.equal(latestTapTs([ev('drink', 10), ev('shake', 20)], 0), null);
+});
+
+test('latestTapTs:tap 比 seenTs 新 → 返回其 ts', () => {
+  assert.equal(latestTapTs([ev('tap', 30)], 0), 30);
+});
+
+test('latestTapTs:≤ seenTs 的旧事件被忽略(同一事件不吃两次)', () => {
+  assert.equal(latestTapTs([ev('tap', 30)], 30), null, '等于 seenTs 应忽略');
+  assert.equal(latestTapTs([ev('tap', 30)], 31), null, '早于 seenTs 应忽略');
+});
+
+test('latestTapTs:tap 与 long_press 都算,取最新', () => {
+  assert.equal(latestTapTs([ev('tap', 30), ev('long_press', 55), ev('tap', 40)], 0), 55);
+});
+
+test('latestTapTs:只取 seenTs 之后的最新一个(多事件同帧)', () => {
+  assert.equal(latestTapTs([ev('tap', 30), ev('tap', 60)], 30), 60);
 });
 
 // ── 去抖 ────────────────────────────────────────────────────────

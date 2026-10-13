@@ -81,7 +81,14 @@ export const EVENT_TYPES = [
   'tilt_alert',
   'low_battery',
   'off_base',
+  // 手势(盖内压力传感器,创意备忘 §5.1 #1):轻磕 / 长按 → 确认。
+  // tap=短促接触;long_press=持续按压。分类由固件按 duration_ms 阈值定,契约只装结论。
+  'tap',
+  'long_press',
 ] as const;
+
+/** 需要携带 duration_ms 的手势事件类型(与下面 refine 同源,勿分开改)。 */
+const GESTURE_TYPES = ['tap', 'long_press'] as const;
 
 export const DERIVED_BY = ['base', 'lid', 'backend'] as const;
 
@@ -94,6 +101,8 @@ export const EventSchema = z
     type: z.enum(EVENT_TYPES),
     amount_ml: z.number().nonnegative().optional(),
     temp_c: z.number().optional(),
+    // 手势接触/按压时长(ms);仅 tap/long_press 携带
+    duration_ms: z.int().nonnegative().optional(),
     confidence: z.number().min(0).max(1),
     derived_by: z.enum(DERIVED_BY),
   })
@@ -101,6 +110,12 @@ export const EventSchema = z
     (e) =>
       (e.type === 'drink' || e.type === 'refill') === (e.amount_ml !== undefined),
     { message: 'amount_ml 必须且仅在 drink/refill 时携带' },
+  )
+  .refine(
+    (e) =>
+      (GESTURE_TYPES as readonly string[]).includes(e.type) ===
+      (e.duration_ms !== undefined),
+    { message: 'duration_ms 必须且仅在 tap/long_press 时携带' },
   );
 
 // ── §2.1 上行信封(实时/常规两档共用的外层)──────────────────────

@@ -90,7 +90,7 @@ export function Dashboard({
       <section className="rounded-2xl bg-white/70 p-4 ring-1 ring-cup-veil/50">
         <h2 className="mb-3 text-sm font-semibold text-cup-deep">杯盖双眼(硬件脸预览)</h2>
         <div className="flex justify-center">
-          <EyePreview lid={frame?.lid} base={frame?.base} disposition={disposition} />
+          <EyePreview lid={frame?.lid} base={frame?.base} events={events} disposition={disposition} />
         </div>
       </section>
       <section className="rounded-2xl bg-white/70 p-4 ring-1 ring-cup-veil/50">

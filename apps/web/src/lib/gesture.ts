@@ -7,15 +7,14 @@
  * 这个模块是**纯逻辑**:吃契约里已有的 `motion` / `tilt_deg` 遥测(无需新数据),
  * 边沿检测切出手势,再翻译成 `{ line, state }`。渲染交给 EyePreview(和眼睛同源)。
  *
- * **契约边界(为什么只做前端半)**:备忘设想"契约加 gesture 事件"。但 `packages/contract`
- * 是**冻结的四方设备协议**,加事件是设计决策,得用户拍板 —— 故这里**只做边沿检测版**:
- *   · 摇/连摇/倾斜/放下  ← 全部由**现有** `motion`/`tilt_deg` 边沿推出,零契约改动;
- *   · 轻磕/长按(tap)    ← 契约里没有对应信号,留一个 `noteTap()` seam(固件将来发 `gesture`
- *                          事件时接上即可),**现在不驱动任何 UI**。
+ * **信号源(2026-10-14 接上)**:摇/连摇/倾斜/放下 全由**现有** `motion`/`tilt_deg`
+ * 边沿推出,零契约改动;轻磕/长按(tap)原先是空 seam —— 现契约已加 `tap`/`long_press`
+ * 事件(盖内压力传感器,`packages/contract` §4),由 `latestTapTs()` 从事件流挑出新的一次,
+ * 喂给 `noteTap()`。两类事件都归为「确认」。
  * 与眼睛状态机同款:纯函数/纯状态机、零 DOM、可单测(web 无 jsdom 也能测)。
  */
 
-import type { MotionState } from '@cup/contract';
+import type { CupEvent, MotionState } from '@cup/contract';
 import type { EyeState } from './eyes.ts';
 
 /**
@@ -92,13 +91,13 @@ export class Gestures {
   private settleT: number | null = null;
   /** 全局去抖:上次出手势的时钟 */
   private lastGestureAt = -Infinity;
-  /** 轻磕/长按的 pending(契约 seam:固件发 gesture 事件时由 noteTap() 置位) */
+  /** 手势事件的 pending(契约 tap/long_press 事件 → noteTap() 置位) */
   private tapPending = false;
 
   /**
-   * 契约 seam:**轻磕 / 长按 → 确认**。
-   * 契约目前没有对应信号(备忘设想"契约加 gesture 事件"),故这个方法暂时**没有真实调用方**;
-   * 固件将来发 `gesture` 事件时,把它接到这里即可,识别器无需改动。
+   * **轻磕 / 长按 → 确认**。
+   * 信号源:契约的 `tap`/`long_press` 事件(盖内压力传感器)。调用方(EyePreview)
+   * 每帧用 `latestTapTs()` 挑出新事件后调本方法置位,下一帧 step 即吐出 `tap` 手势。
    */
   noteTap(): void {
     this.tapPending = true;
@@ -179,4 +178,21 @@ const PRIORITY: Gesture[] = ['shakeTwice', 'shake', 'tap', 'putDown', 'tilt'];
 function pickByPriority(cands: Gesture[]): Gesture | null {
   for (const g of PRIORITY) if (cands.includes(g)) return g;
   return cands[0] ?? null;
+}
+
+/**
+ * 从事件流里挑出**比 `seenTs` 更新**的一次轻磕/长按,返回它的事件时间戳;没有则 null。
+ *
+ * 纯函数:调用方(EyePreview)持有上次的时间戳,每帧拿到事件列表就调一次 —— 多了一次
+ * 新接触就 `noteTap()` 一次,同一事件因 `seenTs` 回传而不会被重复吃进。`tap`/`long_press`
+ * 在契约里都归为「确认」,故不区分。
+ */
+export function latestTapTs(events: readonly CupEvent[], seenTs: number): number | null {
+  let newest: number | null = null;
+  for (const e of events) {
+    if (e.type !== 'tap' && e.type !== 'long_press') continue;
+    if (e.ts <= seenTs) continue;
+    if (newest === null || e.ts > newest) newest = e.ts;
+  }
+  return newest;
 }
