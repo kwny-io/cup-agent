@@ -52,6 +52,7 @@ function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
     login: async () => ({ ok: true, user: USER }),
     logout: async () => {},
     hasSession: () => false,
+    getToken: () => null,
     getProfile: async (): Promise<ServerProfile | null> => ({ cup_id: 'cup-X', nickname: '小绿', traits: T }),
     saveProfile: async (nickname): Promise<ServerProfile | null> => ({ cup_id: 'cup-X', nickname, traits: T }),
     getCupLlm: async (): Promise<CupLlmPublic | null> => null,

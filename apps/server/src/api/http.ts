@@ -13,15 +13,17 @@
  *
  * 允许跨域(开发期前端在别的端口),生产再收紧。
  *
- * 鉴权(风险台账 R10-B):写端点**默认强制**。三个写端点
- * (`PUT goal` / `POST config` / `POST ask`)必须带 `x-api-key: <key>`,
- * 缺头 / 不匹配 → 401(小 JSON `{ error: "unauthorized" }`)。
- *   · key 由上层(app.ts)决定:env `CUP_API_KEY` 优先;未设则由 createApp 生成
- *     随机 key(默认拒绝 —— 安全默认,不再是"未设即放行")。
- *   · `deps.allowUnauth === true` → **显式**豁免写鉴权(仅 dev/测试)。
- *   · key 缺失又未豁免 → 兜底 fail closed(同样 401)。
- * 只挡写、不挡读;`GET /healthz` 永远开放。判定集中在 isWriteEndpoint(),
- * 不在各处理器里散落 if。
+ * 鉴权(风险台账 R10-B / S4)—— **两条轴**,收口在 authorize():
+ *   · **写端点**(`PUT goal` / `POST config` / `POST ask` / `POST ingest` / `PUT profile`)
+ *     走**设备钥**:必须带 `x-api-key: <key>`,缺头 / 不匹配 → 401(小 JSON
+ *     `{ error: "unauthorized" }`)。key 由上层(app.ts)决定:env `CUP_API_KEY` 优先;
+ *     未设则由 createApp 生成随机 key(默认拒绝 —— 安全默认,不再是"未设即放行")。
+ *   · **读端点**(今日/趋势/事件/状态/战报/性格史 + `GET profile` / `GET memory`)
+ *     走**账号会话 + 归属**(S4,默认强制):未登录 401;登录了但不是这只杯的主人 403
+ *     (不区分未绑/绑了别只 —— 不给探测他人 cup id 的 oracle)。数据随杯走,故"能读这只杯"= 账户已绑它。
+ *   · `deps.allowUnauth === true` → **显式豁免读+写**(仅 dev/测试)。
+ * `OPTIONS` 预检与 `GET /healthz` 永远开放。判定集中在 isWriteEndpoint(),
+ * 不在各处理器里散落 if。(`--read-auth` 旧占位旗已退役:S4 的会话闸取代它。)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Command } from '@cup/contract';
@@ -89,16 +91,11 @@ export interface ApiDeps {
    */
   apiKey?: string;
   /**
-   * 显式豁免写端点鉴权(R10-B)—— **仅 dev/测试**。true 时写端点不再要 x-api-key。
-   * 默认 false(强制)。别再拿"未设 CUP_API_KEY"当开关,那是旧的隐式放行。
+   * 显式豁免读+写端点鉴权(R10-B / S4)—— **仅 dev/测试**。true 时写端点不再要
+   * x-api-key、读端点不再要会话。默认 false(强制)。
+   * 别再拿"未设 CUP_API_KEY"当开关,那是旧的隐式放行。
    */
   allowUnauth?: boolean;
-  /**
-   * 读端点也要鉴权(默认 false → 读端点开放,与旧行为一致)。
-   * true 时读端点(今日/趋势/事件/状态/战报/性格史)**同样**要 x-api-key。
-   * 这是"可选"层:真正完整的读侧鉴权仍需账号/会话体系,这里只给一个开关。
-   */
-  readAuth?: boolean;
   /** 账号 / 会话 / 市场 / 社交存储;不给则内存实现(不落盘) */
   accounts?: AccountsStore;
   /** 人格档案存储(#72:昵称 + 派生性格快照);不给则内存实现 */
@@ -207,8 +204,8 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
   // `/llm` = 用户给"自己那只杯"配模型(BYOK)→ 走**账号会话**闸(同 /social/*),不走设备 x-api-key。
   if (action === 'llm') return await cupLlmRoute(req, res, deps, cupId);
 
-  // 写端点守卫(R10):仅在配了 key 时启用。读端点 / healthz 不受影响。
-  if (!authorize(req, res, deps, method, action)) return;
+  // 端点守卫:写走 x-api-key,读走会话+归属(S4)。/healthz 与 OPTIONS 已在上游放行。
+  if (!(await authorize(req, res, deps, method, action, cupId))) return;
 
   switch (action) {
     case 'today':
@@ -1153,31 +1150,65 @@ function isWriteEndpoint(method: string, action: string): boolean {
 }
 
 /**
- * 写端点鉴权(R10-B)—— 默认强制。
- * 读端点一律放行;写端点必须带 `x-api-key` 且值相等,否则 401(小 JSON)。
- *   · allowUnauth → 显式豁免(仅 dev/测试)。
- *   · 无 key(未配置)又未豁免 → fail closed(仍 401)。
- * @returns true = 放行继续处理;false = 已回 401,调用方应 return。
+ * 读端点判定 —— **按方法 + 动作显式列举**,与写端点对称。
+ *
+ * 为什么要单独一张表而不是"非写即读":`GET /ingest`、`GET /config` 之类**方法不对**的
+ * 请求应落到下游的 405(只收 POST),不能被读闸拦成 401 —— 否则错误码撒谎。
+ * `profile`/`memory` 的 GET 是读、PUT/POST 是写;`llm` 端点自带会话闸(不走这里)。
  */
-function authorize(
+function isReadEndpoint(method: string, action: string): boolean {
+  if (method !== 'GET') return false;
+  return (
+    action === 'today' ||
+    action === 'series' ||
+    action === 'events' ||
+    action === 'state' ||
+    action === 'report/latest' ||
+    action === 'report/history' ||
+    action === 'personality/history' ||
+    action === 'profile' ||
+    action === 'memory'
+  );
+}
+
+/**
+ * 端点鉴权,收口一处 —— **两条轴**,默认都强制。
+ *
+ * 写端点(`isWriteEndpoint` 真)→ **设备钥**:必须带 `x-api-key` 且值相等,否则 401。
+ * 读端点(`isReadEndpoint` 真)→ **账号会话 + 归属**(S4):未登录 401;登录了但杯不归你 403。
+ *   · allowUnauth → 显式豁免读+写(仅 dev/测试),优先于两者。
+ *   · 既非写也非读(如 `GET /ingest` 这类**方法不对**的请求)→ **放行**,落到下游的
+ *     405,别拿 401 撒谎(方法错 ≠ 没授权)。
+ *
+ * @returns true = 放行继续处理;false = 已回 401/403,调用方应 return。
+ */
+async function authorize(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ApiDeps,
   method: string,
   action: string,
-): boolean {
-  const write = isWriteEndpoint(method, action);
-  // 读端点:默认放行;readAuth=true 时也纳入鉴权(可选层)。
-  if (!write && deps.readAuth !== true) return true;
-  if (deps.allowUnauth) return true; // 显式豁免(dev/测试)
+  cupId: string,
+): Promise<boolean> {
+  if (deps.allowUnauth) return true; // 显式豁免(dev/测试),读+写通吃
 
-  const key = deps.apiKey;
-  const header = req.headers['x-api-key'];
-  const provided = Array.isArray(header) ? header[0] : header;
-  if (key && provided === key) return true;
+  if (isWriteEndpoint(method, action)) {
+    const key = deps.apiKey;
+    const header = req.headers['x-api-key'];
+    const provided = Array.isArray(header) ? header[0] : header;
+    if (key && provided === key) return true;
+    send(res, 401, { error: 'unauthorized' });
+    return false;
+  }
 
-  send(res, 401, { error: 'unauthorized' });
-  return false;
+  if (isReadEndpoint(method, action)) {
+    // 读端点:账号会话 + 归属(数据随杯走,故"能读" = 账户已绑它)。
+    const me = await guardUser(req, res, deps);
+    if (!me) return false; // 未登录 → 已回 401
+    return guardCupOwner(res, deps, cupId, me.user_id); // 非主人 → 已回 403
+  }
+
+  return true; // 既非写也非读(方法不对)→ 让下游回 405
 }
 
 // ── 工具 ───────────────────────────────────────────────────────────

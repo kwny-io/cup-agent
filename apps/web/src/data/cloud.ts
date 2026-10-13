@@ -422,7 +422,12 @@ export class CloudSource implements DataSource {
 
   private async getJson<T>(path: string): Promise<T | null> {
     try {
-      const r = await fetch(`${this.apiBase}${path}`);
+      // 读端点要登录会话 + 归属(S4):登录后带 Bearer;无令牌时不带该头(闸关时后端忽略)。
+      const token = this.social.getToken();
+      const r = await fetch(
+        `${this.apiBase}${path}`,
+        token !== null ? { headers: { authorization: `Bearer ${token}` } } : undefined,
+      );
       if (!r.ok) return null;
       return (await r.json()) as T;
     } catch {

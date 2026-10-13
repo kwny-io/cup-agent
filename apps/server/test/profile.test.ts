@@ -171,16 +171,18 @@ test('PUT profile:缺 nickname 字段 → 200 空昵称(不报错)', async () =>
   }
 });
 
-// ── R10-B:写端点鉴权,读端点开放 ─────────────────────────────────
+// ── R10-B / S4:写端点走设备钥,读端点走会话+归属 ─────────────────
 
-test('R10-B:配了 apiKey → PUT 无 key 401,带对 key 放行;GET 始终开放', async () => {
-  // 显式给 key（不 用 allowUnauth）→ 写端点强制
+test('R10-B/S4:PUT 无 key 401、带对 key 放行;GET 无会话 401、登录且绑杯后 200', async () => {
+  // 显式给 key(不用 allowUnauth)→ 写端点强制;读端点走会话闸
   const app = createApp({ log: () => {}, apiKey: 'secret-key' });
   const port = await app.listen(0);
   const base = `http://127.0.0.1:${port}`;
   try {
-    assert.equal((await getProfile(base)).status, 200, '读端点默认开放');
+    // 读端点:无会话 → 401(S4;不再是"默认开放")
+    assert.equal((await getProfile(base)).status, 401, '读端点无会话 → 401');
 
+    // 写端点:无 key / 错 key → 401;对 key → 200
     assert.equal((await putProfile(base, { nickname: 'a' })).status, 401, '写端点无 key → 401');
     assert.equal(
       (await putProfile(base, { nickname: 'a' }, { 'x-api-key': 'wrong' })).status,
@@ -189,6 +191,24 @@ test('R10-B:配了 apiKey → PUT 无 key 401,带对 key 放行;GET 始终开放
     );
     const ok = await putProfile(base, { nickname: 'a' }, { 'x-api-key': 'secret-key' });
     assert.equal(ok.status, 200, '带对 key → 放行');
+
+    // 读端点:登录 + 绑这只杯 → 200
+    const reg = await fetch(`${base}/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'owner@example.com', password: 'pw-123456' }),
+    });
+    const { token } = (await reg.json()) as { token: string };
+    const bind = await fetch(`${base}/social/cup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ cup_id: CUP }),
+    });
+    assert.equal(bind.status, 200, '绑杯应成功');
+    const withSession = await fetch(`${base}/cups/${CUP}/profile`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(withSession.status, 200, '登录且绑杯 → 读放行');
   } finally {
     await app.close();
   }

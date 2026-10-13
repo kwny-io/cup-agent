@@ -92,7 +92,7 @@ test('验收1(续):时间加速不影响数字 —— 同 seed 两次跑结果�
 // ── 验收 2:REST 能拉到合理数据 ──────────────────────────────────
 
 test('验收2:GET /today 与 /series 返回合理数据', async () => {
-  const app = createApp({ log: () => {} });
+  const app = createApp({ log: () => {}, allowUnauth: true });
   const { frames, startMs } = simulateDay();
   for (const f of frames) await app.pipeline.ingest(f);
   const port = await app.listen(0);
@@ -283,7 +283,7 @@ test('验收4:sim-adapter 拒收不合契约报文,合法报文照常进库', as
 // ── 验收(M4):战报 API 的数字与 /today 一致 ──────────────────────
 
 test('验收(M4):GET /report/latest 数字与 /today 一致,且带性格', async () => {
-  const app = createApp({ log: () => {} });
+  const app = createApp({ log: () => {}, allowUnauth: true });
   const { frames } = simulateDay();
   for (const f of frames) await app.pipeline.ingest(f);
   const port = await app.listen(0);
@@ -308,7 +308,7 @@ test('验收(M4):GET /report/latest 数字与 /today 一致,且带性格', async
 });
 
 test('验收(M4):今天没有数据时战报返回 404(不编空战报)', async () => {
-  const app = createApp({ log: () => {} });
+  const app = createApp({ log: () => {}, allowUnauth: true });
   const port = await app.listen(0);
   try {
     const res = await fetch(
