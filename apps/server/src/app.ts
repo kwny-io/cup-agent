@@ -7,6 +7,7 @@
 import { MemoryStore, type Store } from './store/store.ts';
 import { Pipeline } from './core/pipeline.ts';
 import { CommandQueue } from './core/commands.ts';
+import { makeGrowthNotifier } from './core/growth-notify.ts';
 import { LiveHub } from './api/live.ts';
 import { createApiServer } from './api/http.ts';
 import { startSimAdapter, type SimAdapterHandle } from './ingest/sim-adapter.ts';
@@ -271,10 +272,17 @@ export function createApp(opts: AppOptions = {}): App {
       })
     : null;
 
+  // 成长庆祝(养成闭环):事件落定后旁挂判"今天是否新跨里程碑"→ 入队 remind 下行。
+  // 旁路观察者,改不动写路径;业务判定在后端,固件只认 reason='milestone'(见 growth-notify.ts)。
+  const notifyGrowth = makeGrowthNotifier({ store, commands, log });
+
   // 管线产出 → 实时推送。这就是"WS 在模拟器发数据时能实时收到"的连线(验收 3)。
   const pipeline = new Pipeline(store, {
     sample: (s) => live.broadcast({ kind: 'sample', cup_id: s.cup_id, payload: s }),
-    event: (e) => live.broadcast({ kind: 'event', cup_id: e.cup_id, payload: e }),
+    event: (e) => {
+      live.broadcast({ kind: 'event', cup_id: e.cup_id, payload: e });
+      notifyGrowth(e);
+    },
     telemetry: (p) => live.broadcast({ kind: 'telemetry', cup_id: p.cup_id, payload: p }),
   });
 

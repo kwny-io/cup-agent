@@ -11,6 +11,7 @@
  * 配色不写死:走与 UI 一致的暖青体系(见 lib/color.ts),深底 + 亮字,截图好看。
  */
 import type { TraitRecord } from '../data/source.ts';
+import type { MemoirLine } from './memories.ts';
 
 export interface CardLine {
   /** 角色:标题行放大加粗,副标题略小,正文常规 */
@@ -81,6 +82,17 @@ export function buildShareCard(team: { streak: number; members: number; days: st
 
 export const CARD_W = 480;
 export const CARD_H = 320;
+
+/**
+ * 回忆录卡模型 —— 把「回忆」的逐日行整成一张长图(与养成卡/分享卡同一皮)。
+ * 每天一行(`M月D日 周X · 一句话标题`),行数 = 天数,故卡高随天数增长(cardHeight 会算)。
+ * 标题行下再压一行小字:共几天的回忆。
+ */
+export function buildMemoirCard(lines: MemoirLine[], dateLabel: string): CardModel {
+  const body: CardLine[] = [{ role: 'subtitle', text: `共 ${lines.length} 天的回忆` }];
+  for (const l of lines) body.push({ role: 'body', text: `${l.label} · ${l.title}` });
+  return { title: '我们的回忆录', lines: body, footnote: `cup-agent · 导出于 ${dateLabel}` };
+}
 
 /**
  * 把模型画到 2D 上下文的尺寸算出来 —— 卡高随行数走(行多就高一点)。

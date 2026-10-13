@@ -19,9 +19,12 @@ import type {
   CupLlmDraft,
   CupLlmPublic,
   FriendView,
+  GrowthSnapshot,
   LogPage,
   LogPartition,
   LogQuery,
+  MemoryCard,
+  MemoryQuery,
   PackDraft,
   PackStatus,
   PersonaPack,
@@ -30,6 +33,7 @@ import type {
   SocialApi,
   TeamState,
 } from './source.ts';
+import { isGrowthSnapshot, isMemoryCard } from './source.ts';
 
 /** 会话令牌的存储键(sessionStorage)。命名带前缀,避免与别的站点/组件撞。 */
 const SESSION_KEY = 'cup.session';
@@ -241,6 +245,38 @@ export class CloudSocial implements SocialApi {
       true,
     );
     return r.ok ? (r.data as ServerProfile) : null;
+  }
+
+  // ── 长期记忆 / 回忆(第 3 阶段)─────────────────────────────────
+
+  async getMemory(q?: MemoryQuery): Promise<MemoryCard[]> {
+    const p = new URLSearchParams();
+    if (q?.all) p.set('all', '1');
+    else if (typeof q?.recent === 'number') p.set('recent', String(q.recent));
+    // build=1 → 后端先按需补封今天那张卡(幂等;那天没数据就不建空卡),再返回
+    if (q?.buildToday) p.set('build', '1');
+    const qs = p.toString();
+    const r = await this.req(
+      'GET',
+      `/cups/${encodeURIComponent(this.cupId)}/memory${qs === '' ? '' : `?${qs}`}`,
+    );
+    if (!r.ok) return [];
+    const d = r.data as { days?: unknown };
+    if (!Array.isArray(d?.days)) return [];
+    return d.days.filter(isMemoryCard);
+  }
+
+  async deleteMemory(scope: 'conversation' | 'memory' | 'all'): Promise<boolean> {
+    const r = await this.req(
+      'DELETE',
+      `/cups/${encodeURIComponent(this.cupId)}/memory?scope=${encodeURIComponent(scope)}`,
+    );
+    return r.ok;
+  }
+
+  async getGrowth(): Promise<GrowthSnapshot | null> {
+    const r = await this.req('GET', `/cups/${encodeURIComponent(this.cupId)}/growth`);
+    return r.ok && isGrowthSnapshot(r.data) ? r.data : null;
   }
 
   // ── 每杯自选模型(BYOK)────────────────────────────────────────

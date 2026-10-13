@@ -69,6 +69,7 @@ import { LOG_PAGE_MAX, type LogQuery, type ServerLogStore } from '../core/log-st
 import { applyRetention, listPartitions, type RetentionOptions } from '../store/pg/migrate.ts';
 import { query, type Pool } from '../store/pg/pool.ts';
 import { computePersonality, traitRecord } from '../core/personality.ts';
+import { deriveGrowth } from '../core/growth.ts';
 import { closeDayCard } from '../core/memory-cards.ts';
 
 /** 用户提问的长度上限(超了直接 400,别灌进提示词) */
@@ -240,7 +241,7 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
     return await accountDeleteRoute(req, res, deps);
   }
 
-  const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|profile|memory|llm)$/);
+  const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|growth|profile|memory|llm)$/);
   if (!m) {
     send(res, 404, { error: 'not found', path });
     return;
@@ -285,6 +286,8 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
       return await historyRoute(res, deps, cupId, url);
     case 'personality/history':
       return await personalityHistoryRoute(res, deps, cupId, url);
+    case 'growth':
+      return await growthRoute(res, deps, cupId);
     case 'profile':
       return await profileRoute(req, res, deps, cupId);
     case 'memory':
@@ -997,6 +1000,29 @@ async function personalityHistoryRoute(
 }
 
 /**
+ * 成长快照的天数上限 —— 「一起第 N 天 / 满月 / 一年」要看全程,故窗口取得比性格(7)长得多。
+ * 两年有界(730),仍走 `recentAggs` 单次区间查询(它按天查表,两年不重);**不新增 store 方法**。
+ * 与 memory 的 366 一样是"足够长但有界",免得无界回溯。
+ */
+const GROWTH_DAYS = 730;
+
+/**
+ * 成长快照(养成闭环,优先级 1)—— `GET /cups/:id/growth`(纯读,无 LLM,无落盘)。
+ *
+ * 与 /profile 的 traits 分工:那是**当下性格**(7 天窗口的达标率 / 温度 / 续杯);
+ * 这是**随时间累积的成长进度**(一起多久 / 阶段 / 里程碑阶梯 / 今天新解锁什么),
+ * 天然要更长窗口。数字全来自 `recentAggs`,派生逻辑在 core/growth.ts(纯函数,可单测)。
+ *
+ * 无任何数据 → 200 + 阶段「新生」+ 全未达成(正常态,非 404 —— 刚开箱就是这样)。
+ */
+async function growthRoute(res: ServerResponse, deps: ApiDeps, cupId: string): Promise<void> {
+  const today = dayKey(Date.now());
+  const recent = await deps.store.recentAggs(cupId, today, GROWTH_DAYS);
+  const growth = deriveGrowth(recent);
+  send(res, 200, { cup_id: cupId, today, growth });
+}
+
+/**
  * 人格档案(#72)—— 养成卡的**读写两端**(昵称 + 派生性格快照)。
  *
  *   GET  /cups/:id/profile → 200 { cup_id, nickname, traits }
@@ -1042,14 +1068,19 @@ async function profileRoute(
 
 const PROFILE_NICKNAME_MAX = 24;
 
-/** 记忆卡回看的天数上限(与 recall 工具同口径;有界,别把一个月灌回来) */
-const MEMORY_DAYS_MAX = 30;
+/**
+ * 记忆卡回看的天数上限 —— 「回忆」要翻"那年今日 / 一起第 N 天",一个月的窗口不够,
+ * 放到一年有界(366 = 含闰年),仍走 `recentMemoryCards` 单次区间查询,不新增 store 方法。
+ * recall 工具另有自己的窄窗口(见 chat/tools.ts),与此解耦,故这里放宽不影响喂模型的量。
+ */
+const MEMORY_DAYS_MAX = 366;
 const MEMORY_DAYS_DEFAULT = 7;
 
 /**
  * 长期记忆(第 3 阶段)—— 读端。`GET /cups/:id/memory`
  *   · `?day=YYYY-MM-DD` → 只取那天
- *   · `?recent=N`(≤30,默认 7)→ 最近 N 天(只含有卡的天)
+ *   · `?recent=N`(≤366,默认 7)→ 最近 N 天(只含有卡的天)
+ *   · `?all=1` → 取全部有卡的日(等价 `recent=366`,给「回忆」一次翻完)
  *   · `?build=1` → 先按需补建那天的卡(那天有数据/对话才建),再返回
  *
  * 返回 `{ cup_id, days: MemoryCard[] }`。**只读**(build=1 会写一张卡,但仍是幂等的封存)。
@@ -1077,8 +1108,14 @@ async function memoryRoute(
     return send(res, 200, { cup_id: cupId, days: card ? [card] : [] });
   }
 
+  // all=1 → 一年整窗(有界);否则按 recent(默认 7),同样钳到上限
+  const all = url.searchParams.get('all') === '1';
   const raw = Number(url.searchParams.get('recent'));
-  const days = Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), MEMORY_DAYS_MAX) : MEMORY_DAYS_DEFAULT;
+  const days = all
+    ? MEMORY_DAYS_MAX
+    : Number.isFinite(raw) && raw >= 1
+      ? Math.min(Math.floor(raw), MEMORY_DAYS_MAX)
+      : MEMORY_DAYS_DEFAULT;
   const today = dayKey(Date.now());
   if (build) await closeDayCard(deps.store, memory, cupId, today, Date.now());
   const cards = await deps.store.recentMemoryCards(cupId, today, days);
@@ -1404,6 +1441,7 @@ function isReadEndpoint(method: string, action: string): boolean {
     action === 'report/latest' ||
     action === 'report/history' ||
     action === 'personality/history' ||
+    action === 'growth' ||
     action === 'profile' ||
     action === 'memory'
   );

@@ -345,6 +345,124 @@ export interface AdminUser extends PublicUser {
   created_at: number;
 }
 
+// ── 长期记忆 / 回忆(第 3 阶段)—— `GET /cups/:id/memory` ────────────
+// 与后端 core/types.ts 的 MemoryCardDetails / MemoryCard 同形(冻结握手)。
+// 回忆界面是这块的**唯一消费者**;数字全来自后端封存的卡,前端不重算。
+
+/** 记忆卡里一天的点滴 —— 数值 + 当天显著事件 + 身体线索 + 对话蒸馏。 */
+export interface MemoryCardDetails {
+  drank_ml: number;
+  goal_ml: number;
+  reached: boolean;
+  streak: number;
+  refill_count: number;
+  /** 水温区间 [最低, 最高];当天无水温 → null */
+  temp_range: [number, number] | null;
+  /** 当天"值得记一笔"的事件(被摔/烫/没电/倾斜/离座),按 ts 升序 */
+  notable_events: { type: string; ts: number }[];
+  /** 当天身体线索(与 body.ts 同源的类型→cue 映射) */
+  body_cues: { cue: string; evidence: string }[];
+  /** 当天对话的一两句蒸馏;当天没聊 → null */
+  turns_summary: string | null;
+  turn_count: number;
+}
+
+/** 一张记忆卡(按本地日存)。`date` = 'YYYY-MM-DD'。 */
+export interface MemoryCard {
+  cup_id: string;
+  date: string;
+  details: MemoryCardDetails;
+  /** 后端封存时刻(ms) */
+  built_at: number;
+}
+
+/** 记忆卡回看的取数参数:`all=1` 取全部有卡的日;否则最近 `recent` 天(后端钳到 366)。 */
+export interface MemoryQuery {
+  all?: boolean;
+  recent?: number;
+  /** 取前先按需补封今天那张卡(=`build=1`);幂等,那天没数据就不建空卡。 */
+  buildToday?: boolean;
+}
+
+/** 守卫:REST 来的记忆卡形状不对就当没拿到,不让半截卡进回忆时间线。 */
+export function isMemoryCard(v: unknown): v is MemoryCard {
+  if (!v || typeof v !== 'object') return false;
+  const c = v as Record<string, unknown>;
+  if (typeof c.date !== 'string') return false;
+  const d = c.details;
+  if (!d || typeof d !== 'object') return false;
+  const x = d as Record<string, unknown>;
+  return (
+    typeof x.drank_ml === 'number' &&
+    typeof x.goal_ml === 'number' &&
+    typeof x.reached === 'boolean' &&
+    Array.isArray(x.notable_events)
+  );
+}
+
+// ── 成长 / 养成闭环(优先级 1)—— `GET /cups/:id/growth` ─────────────
+// 与后端 core/growth.ts 同形(冻结握手)。数字全来自后端 recentAggs 派生,前端不重算。
+
+/** 成长阶段(按"一起第 N 天"升阶) */
+export interface GrowthStage {
+  key: string;
+  name: string;
+  min_days: number;
+}
+
+/** 里程碑种类(每种对应一个可数的量) */
+export type MilestoneKind = 'together' | 'streak' | 'achieved' | 'refill';
+
+/** 一道里程碑(含未达成的,带进度) */
+export interface Milestone {
+  id: string;
+  label: string;
+  kind: MilestoneKind;
+  threshold: number;
+  /** 该种类当下的值 */
+  value: number;
+  achieved: boolean;
+  /** 0–1,夹紧 */
+  progress: number;
+}
+
+/** 成长快照(后端 `deriveGrowth` 产物)—— 一起多久 / 阶段 / 里程碑 / 今天新解锁 */
+export interface Growth {
+  days_together: number;
+  best_streak: number;
+  total_achieved_days: number;
+  total_refill_days: number;
+  stage: GrowthStage;
+  next_stage: GrowthStage | null;
+  milestones: Milestone[];
+  next_milestone: Milestone | null;
+  /** 今天**新解锁**的里程碑(最大的那个);没跨坎 → null */
+  celebrate: Milestone | null;
+}
+
+/** 端点响应体(外层包 cup_id + today)。 */
+export interface GrowthSnapshot {
+  cup_id: string;
+  today: string;
+  growth: Growth;
+}
+
+/** 守卫:REST 来的成长快照形状不对就当没拿到。 */
+export function isGrowthSnapshot(v: unknown): v is GrowthSnapshot {
+  if (!v || typeof v !== 'object') return false;
+  const g = (v as Record<string, unknown>).growth;
+  if (!g || typeof g !== 'object') return false;
+  const x = g as Record<string, unknown>;
+  const stage = x.stage;
+  return (
+    typeof x.days_together === 'number' &&
+    Array.isArray(x.milestones) &&
+    !!stage &&
+    typeof stage === 'object' &&
+    typeof (stage as Record<string, unknown>).key === 'string'
+  );
+}
+
 /** 人格档案(#72)—— `GET|PUT /cups/:id/profile` */
 export interface ServerProfile {
   cup_id: string;
@@ -471,6 +589,22 @@ export interface SocialApi {
   // ── 人格档案(#72)──
   getProfile(): Promise<ServerProfile | null>;
   saveProfile(nickname: string): Promise<ServerProfile | null>;
+
+  // ── 长期记忆 / 回忆(第 3 阶段)── 读 /memory;删走同路由 DELETE。
+  /** 取记忆卡;`q.all` 一次翻完(≤366 天),否则最近 `q.recent`(默认后端 7)。失败 → []。 */
+  getMemory(q?: MemoryQuery): Promise<MemoryCard[]>;
+  /**
+   * 三档删除(「被遗忘权」)。scope:
+   *   · conversation → 对话轮 + 长期画像(「聊过什么」)
+   *   · memory       → 记忆卡 + 人格档案(「那些日子」)
+   *   · all          → 一切都归零(含遥测)
+   * 成功 → true。scope 由调用方给全(后端不默认、不猜测)。
+   */
+  deleteMemory(scope: 'conversation' | 'memory' | 'all'): Promise<boolean>;
+
+  // ── 成长 / 养成闭环(优先级 1)── 读 /growth;纯读,无写动作。
+  /** 取成长快照(阶段 / 里程碑阶梯 / 今天新解锁)。失败 → null(UI 显示空态)。 */
+  getGrowth(): Promise<GrowthSnapshot | null>;
 
   // ── 每杯自选模型(BYOK)── 走**账号会话**(Bearer,同 /social/*),不走设备 x-api-key
   getCupLlm(): Promise<CupLlmPublic | null>;

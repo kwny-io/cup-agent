@@ -178,6 +178,117 @@ test('submitPack:失败 → null(不让半截包进 UI)', async () => {
   assert.equal(out, null);
 });
 
+test('getMemory:默认无参 → 命中 /cups/:id/memory 不带 query;解出 days', async () => {
+  const cap: Cap[] = [];
+  const impl = router(
+    [
+      {
+        match: (u) => u.includes('/cups/cup-X/memory') && !u.includes('?'),
+        json: { cup_id: 'cup-X', days: [{ cup_id: 'cup-X', date: '2026-10-13', built_at: 1, details: { drank_ml: 1200, goal_ml: 1500, reached: false, notable_events: [] } }] },
+      },
+    ],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  const cards = await s.getMemory();
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0]?.date, '2026-10-13');
+  assert.equal(cap[0]?.url, `${BASE}/cups/cup-X/memory`, '默认不带 query');
+});
+
+test('getMemory:{all:1} → ?all=1;{recent:30} → ?recent=30', async () => {
+  const cap: Cap[] = [];
+  const impl = router([{ match: (u) => u.includes('/cups/cup-X/memory'), json: { days: [] } }], cap);
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  await s.getMemory({ all: true });
+  await s.getMemory({ recent: 30 });
+  assert.equal(cap[0]?.url, `${BASE}/cups/cup-X/memory?all=1`);
+  assert.equal(cap[1]?.url, `${BASE}/cups/cup-X/memory?recent=30`);
+});
+
+test('getMemory:{buildToday} → ?build=1 叠在窗口参数上(封存今天)', async () => {
+  const cap: Cap[] = [];
+  const impl = router([{ match: (u) => u.includes('/cups/cup-X/memory'), json: { days: [] } }], cap);
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  await s.getMemory({ all: true, buildToday: true });
+  assert.equal(cap[0]?.url, `${BASE}/cups/cup-X/memory?all=1&build=1`);
+});
+
+test('getMemory:失败 → [](不 reject);形状不对的卡被守卫丢掉', async () => {
+  const off = (() => Promise.reject(new TypeError('x'))) as unknown as typeof fetch;
+  const s1 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: off, storage: memStorage() });
+  assert.deepEqual(await s1.getMemory({ all: true }), []);
+
+  const impl = router([
+    {
+      match: (u) => u.includes('/cups/cup-X/memory'),
+      // 第二张卡缺 details → 守卫丢;第一张合法 → 留
+      json: { days: [{ date: '2026-10-13', details: { drank_ml: 1, goal_ml: 1, reached: true, notable_events: [] } }, { date: 'x' }] },
+    },
+  ]);
+  const s2 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  const cards = await s2.getMemory({ all: true });
+  assert.equal(cards.length, 1, '半截卡被守卫丢掉');
+});
+
+test('deleteMemory:打到 DELETE /cups/:id/memory?scope=…;失败 → false', async () => {
+  const cap: Cap[] = [];
+  const impl = router(
+    [{ match: (u, m) => u.includes('/cups/cup-X/memory') && m === 'DELETE', status: 204 }],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.equal(await s.deleteMemory('all'), true);
+  assert.equal(cap[0]?.url, `${BASE}/cups/cup-X/memory?scope=all`);
+  assert.equal(cap[0]?.method, 'DELETE');
+
+  const off = (() => Promise.reject(new TypeError('x'))) as unknown as typeof fetch;
+  const s2 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: off, storage: memStorage() });
+  assert.equal(await s2.deleteMemory('memory'), false);
+});
+
+test('getGrowth:GET /cups/:id/growth → 解出 growth 快照;失败 → null', async () => {
+  const cap: Cap[] = [];
+  const impl = router(
+    [
+      {
+        match: (u) => u.includes('/cups/cup-X/growth'),
+        json: {
+          cup_id: 'cup-X',
+          today: '2026-10-14',
+          growth: {
+            days_together: 10,
+            best_streak: 3,
+            total_achieved_days: 4,
+            total_refill_days: 2,
+            stage: { key: 'growing', name: '成长期', min_days: 7 },
+            next_stage: { key: 'steady', name: '稳当', min_days: 30 },
+            milestones: [],
+            next_milestone: null,
+            celebrate: null,
+          },
+        },
+      },
+    ],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  const snap = await s.getGrowth();
+  assert.equal(cap[0]?.url, `${BASE}/cups/cup-X/growth`);
+  assert.equal(cap[0]?.method, 'GET');
+  assert.equal(snap?.growth.days_together, 10);
+  assert.equal(snap?.growth.stage.key, 'growing');
+
+  // 形状不对(缺 stage)→ 归 null,不让半截快照进界面
+  const bad = router([{ match: (u) => u.includes('/cups/cup-X/growth'), json: { cup_id: 'cup-X', today: 'x', growth: { days_together: 1 } } }]);
+  const s2 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: bad, storage: memStorage() });
+  assert.equal(await s2.getGrowth(), null);
+
+  const off = (() => Promise.reject(new TypeError('x'))) as unknown as typeof fetch;
+  const s3 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: off, storage: memStorage() });
+  assert.equal(await s3.getGrowth(), null);
+});
+
 test('adminVerdict:approve/reject 打到对的路径', async () => {
   const cap: Cap[] = [];
   const impl = router(

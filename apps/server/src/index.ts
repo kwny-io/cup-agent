@@ -265,3 +265,20 @@ export {
   MAX_SUMMARY_CHARS,
 } from './core/memory-cards.ts';
 export type { DailyAgg, FusedSample, MemoryCard, MemoryCardDetails, TelemetryPoint } from './core/types.ts';
+export {
+  deriveGrowth,
+  statsOf,
+  stageFor,
+  nextStageFor,
+  STAGES,
+  type Growth,
+  type GrowthStats,
+  type GrowthStage,
+  type Milestone,
+  type MilestoneKind,
+} from './core/growth.ts';
+export {
+  makeGrowthNotifier,
+  type GrowthNotifyStore,
+  type GrowthNotifyDeps,
+} from './core/growth-notify.ts';

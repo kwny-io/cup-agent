@@ -19,16 +19,18 @@ import { CupWidget } from './components/CupWidget.tsx';
 import { FloatingCup } from './components/FloatingCup.tsx';
 import { ChatPanel } from './components/ChatPanel.tsx';
 import { CommunityView } from './components/CommunityView.tsx';
+import { MemoriesView } from './components/MemoriesView.tsx';
 import { AdminPanel } from './components/AdminPanel.tsx';
 import { LogsView } from './components/LogsView.tsx';
 
-type Tab = 'cup' | 'board' | 'chat' | 'community' | 'admin' | 'logs';
+type Tab = 'cup' | 'board' | 'chat' | 'community' | 'memory' | 'admin' | 'logs';
 
 /** 窄屏底部 Tab(顺序即展示顺序);管理台 / 日志 tab 按角色追加(见下) */
 const TABS: { key: Tab; label: string }[] = [
   { key: 'cup', label: '杯子' },
   { key: 'board', label: '看板' },
   { key: 'chat', label: '对话' },
+  { key: 'memory', label: '回忆' },
   { key: 'community', label: '社区' },
 ];
 
@@ -39,7 +41,7 @@ const canReadLogs = (role?: PublicUser['role']): boolean =>
 
 /** 宽屏顶部导航的可见 tab(顺序即展示顺序):看板 / 社区 / 日志 / 管理 */
 function wideNavKeys(role?: PublicUser['role']): Tab[] {
-  const keys: Tab[] = ['board', 'community'];
+  const keys: Tab[] = ['board', 'memory', 'community'];
   if (canReadLogs(role)) keys.push('logs');
   if (canManage(role)) keys.push('admin');
   return keys;
@@ -49,6 +51,7 @@ const TAB_LABEL: Record<Tab, string> = {
   cup: '杯子',
   board: '看板',
   chat: '对话',
+  memory: '回忆',
   community: '社区',
   logs: '日志',
   admin: '管理',
@@ -175,8 +178,10 @@ export function App() {
       )}
 
       <main className="min-h-0 flex-1 overflow-y-auto">
-        {/* 社区 / 日志 / 管理:宽窄屏都有(宽屏走顶部导航切过来) */}
-        {tab === 'community' ? (
+        {/* 回忆 / 社区 / 日志 / 管理:宽窄屏都有(宽屏走顶部导航切过来) */}
+        {tab === 'memory' ? (
+          <MemoriesView social={social} session={session} />
+        ) : tab === 'community' ? (
           <CommunityView social={social} session={session} />
         ) : tab === 'logs' && social && canReadLogs(session.user?.role) ? (
           <LogsView social={social} role={session.user!.role} />
