@@ -38,10 +38,8 @@ interface Args {
   quiet: boolean;
   proactive: boolean;
   cups: string[];
-  /** --allow-unauth:显式豁免写端点鉴权(仅本地开发) */
+  /** --allow-unauth:显式豁免读+写端点鉴权(仅本地开发) */
   allowUnauth: boolean;
-  /** --read-auth:读端点也要 x-api-key(可选层,默认读开放) */
-  readAuth: boolean;
   /** --require-claim:绑定杯子须出示设备一次性 claim code(可信绑定;**默认开**,CUP_REQUIRE_CLAIM=0|false 关) */
   requireClaim: boolean;
   /** 画像蒸馏阈值(自上次蒸馏后新增多少轮才再蒸);null = 用 distill.ts 默认值 */
@@ -63,7 +61,6 @@ function parseArgs(argv: string[]): Args {
     proactive: false,
     cups: [],
     allowUnauth: false,
-    readAuth: false,
     // 可信绑定默认开(绑定须出示设备一次性码);仅显式 `CUP_REQUIRE_CLAIM=0/false` 才关。
     requireClaim: !(process.env.CUP_REQUIRE_CLAIM === '0' || process.env.CUP_REQUIRE_CLAIM === 'false'),
     profileMinTurns: null,
@@ -99,9 +96,6 @@ function parseArgs(argv: string[]): Args {
         break;
       case '--allow-unauth':
         a.allowUnauth = true;
-        break;
-      case '--read-auth':
-        a.readAuth = true;
         break;
       case '--require-claim':
         a.requireClaim = true;
@@ -146,8 +140,8 @@ function parseArgs(argv: string[]): Args {
         console.log('写端点鉴权(风险台账 R10-B;写端点**默认强制**):');
         console.log('  PUT /goal、POST /config、POST /ask 须带 x-api-key。');
         console.log('  CUP_API_KEY=<key>      指定 key;不设则启动时随机生成并打到启动横幅。');
-        console.log('  --allow-unauth         显式豁免(仅本地开发);生产勿用。');
-        console.log('  --read-auth            读端点也要 x-api-key(默认读开放);完整读鉴权需账号体系。');
+        console.log('  --allow-unauth         显式豁免读+写(仅本地开发);生产勿用。');
+        console.log('  读端点(今日/趋势/事件/状态/战报/性格史/档案)须登录会话 + 杯子归属(S4)。');
         console.log('');
         console.log('账号 / 会话(多用户地基;POST /auth/register|login|logout,GET /auth/me):');
         console.log('  CUP_ADMIN_EMAIL=<邮箱>  该邮箱注册即得管理员(市场审核后台);不设则无管理员。');
@@ -324,7 +318,6 @@ async function main(): Promise<void> {
     profileMinNewTurns: args.profileMinTurns ?? undefined,
     apiKey,
     allowUnauth: args.allowUnauth,
-    readAuth: args.readAuth,
     adminEmail: process.env.CUP_ADMIN_EMAIL,
     requireClaim: args.requireClaim,
   });
@@ -348,14 +341,13 @@ async function main(): Promise<void> {
   );
   console.log(`  数据目录: ${dataDir}(目标 + 对话记忆持久化)`);
   console.log(`  日界时区: ${getDayTimeZone() ?? '(服务器本地时区;--tz/CUP_TZ 可设,如 Asia/Shanghai)'}`);
-  const readScope = args.readAuth ? '读+写' : '仅写';
   if (args.allowUnauth) {
     console.log('  端点鉴权: 关(--allow-unauth 显式豁免,仅本地开发;生产勿用)');
   } else if (app.apiKeyGenerated) {
     // 随机生成的 key 只在此处回显一次(供本地 curl 用);不落盘、不入日志文件。
-    console.log(`  端点鉴权: 开(${readScope};随机 key,须带 x-api-key: ${app.apiKey})`);
+    console.log(`  端点鉴权: 写=设备钥(随机 key,须带 x-api-key: ${app.apiKey});读=登录会话+归属`);
   } else {
-    console.log(`  端点鉴权: 开(${readScope};用 CUP_API_KEY,须带 x-api-key)`);
+    console.log('  端点鉴权: 写=设备钥(CUP_API_KEY,须带 x-api-key);读=登录会话+归属');
   }
   console.log(
     `  主动开口: ${args.proactive ? `开(照看 ${args.cups.join(', ') || '无 —— 加 --cup <id>'})` : '关(--proactive 开启)'}`,

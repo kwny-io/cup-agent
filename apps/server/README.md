@@ -46,13 +46,18 @@ curl http://localhost:8788/cups/cup-A1B2C3/today            # 拉今日概览
 
 **实时**:`ws://localhost:8788/cups/<cup_id>/live` —— 新帧 / 主动搭话(`{kind:'proactive'}`)推给订阅者。
 
-## 写端点鉴权(R10-B)
+## 端点鉴权(R10-B / S4)
 
-`PUT /goal`、`POST /config`、`POST /ask`、`POST /ingest` **默认强制** `x-api-key`。读端点默认开放。
+**两条轴,默认都强制:**
 
-- `CUP_API_KEY=<key>` 指定 key;不设则启动时**随机生成并打到启动横幅**(仅回显一次,不落盘)。
-- `--allow-unauth` 显式豁免(仅本地开发,生产勿用)。
-- `--read-auth` 把读端点也纳入鉴权(完整读鉴权需账号体系,此层为可选)。
+- **写端点**(`PUT /goal`、`POST /config`、`POST /ask`、`POST /ingest`、`PUT /profile`)→ **设备钥** `x-api-key`。
+- **读端点**(`GET /today`、`/series`、`/events`、`/state`、`/report/latest`、`/report/history`、`/personality/history`、`/profile`、`/memory`)→ **账号会话 + 杯子归属**(S4):未登录 `401`;登录了但杯不归你 `403`。
+
+`/healthz` 与 `OPTIONS` 预检**永远开放**。
+
+- `CUP_API_KEY=<key>` 指定写钥;不设则启动时**随机生成并打到启动横幅**(仅回显一次,不落盘)。
+- `--allow-unauth` **显式豁免读+写**(仅本地开发,生产勿用)。
+- 旧 `--read-auth` 占位旗**已退役** —— 读侧改由账号会话 + 归属闸接管。
 
 ## 命令行参数
 
@@ -64,8 +69,7 @@ curl http://localhost:8788/cups/cup-A1B2C3/today            # 拉今日概览
 | `--cup` | 空 | 要照看的杯子 id(可重复;`--proactive` 用) |
 | `--proactive` | 关 | 开主动开口 + 画像蒸馏巡检 |
 | `--profile-min-turns` | 8 | 自上次蒸馏后新增多少轮才再蒸一次 |
-| `--allow-unauth` | 关 | 豁免写端点鉴权(本地开发) |
-| `--read-auth` | 关 | 读端点也要 key |
+| `--allow-unauth` | 关 | 豁免读+写端点鉴权(本地开发) |
 | `--tz` | `$CUP_TZ` | 日界时区(IANA,如 `Asia/Shanghai`);缺省用服务器本地时区 |
 | `--migrate` | 关 | 跑迁移建表后即退(不启服务) |
 | `--quiet` | 关 | 不打启动日志 |

@@ -13,7 +13,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '@cup/server';
+import { createApp, dayKey } from '@cup/server';
 import type { MemoryCard, PublicUser } from '@cup/server';
 import type { CupEvent } from '@cup/contract';
 
@@ -96,7 +96,7 @@ async function snap(app: Awaited<ReturnType<typeof startApp>>['app'], cup: strin
   return {
     telemetry: (await app.store.telemetry(cup, 0, now + 1000)).length,
     events: (await app.store.events(cup, 0, now + 1000)).length,
-    agg: await app.store.agg(cup, new Date(now).toISOString().slice(0, 10)),
+    agg: await app.store.agg(cup, dayKey(now)),
     goal: await app.store.goal(cup),
     hasLatest: (await app.store.latestSample(cup)) !== null,
     cards: (await app.store.recentMemoryCards(cup, '2026-10-12', 1)).length,

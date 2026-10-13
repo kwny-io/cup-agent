@@ -422,6 +422,8 @@ export interface SocialApi {
   logout(): Promise<void>;
   /** 是否已有会话令牌(同步判据,给 UI 决定显示登录还是登出) */
   hasSession(): boolean;
+  /** 当前会话令牌(无 → null);供读端点带 `Authorization: Bearer`(S4)。单一真源 = sessionStorage */
+  getToken(): string | null;
 
   // ── 人格档案(#72)──
   getProfile(): Promise<ServerProfile | null>;

@@ -167,7 +167,7 @@ test('HTTP:POST /ingest 缺 key → 401(写端点默认强制)', async () => {
 });
 
 test('HTTP:对 key → 200 带计数,且数据能在 /today 读到(同一条管线)', async () => {
-  const { app, base } = await startApp();
+  const { app, base } = await startApp({ allowUnauth: true });
   try {
     const h = { 'x-api-key': KEY };
     const r = await postIngest(base, { frames: [lidFrame()] }, h);

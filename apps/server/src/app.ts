@@ -94,11 +94,6 @@ export interface AppOptions {
    */
   allowUnauth?: boolean;
   /**
-   * 读端点也要鉴权(可选层,默认 false → 读端点开放)。
-   * 真正的读侧鉴权需账号/会话体系,这里只给一个开关。
-   */
-  readAuth?: boolean;
-  /**
    * 账号 / 会话 / 市场 / 社交存储;不给则有 dataDir → 文件实现(social.json),
    * 否则内存实现(测试/离线用)。
    */
@@ -256,7 +251,6 @@ export function createApp(opts: AppOptions = {}): App {
     resolveChatLlm: opts.resolveChatLlm ?? ((cupId) => cupLlm.chatLlm(cupId)),
     apiKey,
     allowUnauth: opts.allowUnauth,
-    readAuth: opts.readAuth,
     accounts,
     profiles,
     adminEmail: opts.adminEmail,

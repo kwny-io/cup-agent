@@ -103,6 +103,11 @@ export class CloudSocial implements SocialApi {
     return this.token !== null;
   }
 
+  /** 当前会话令牌(无 → null);供 CloudSource 读端点带 Bearer(S4)。 */
+  getToken(): string | null {
+    return this.token;
+  }
+
   // ── 底层请求 ─────────────────────────────────────────────────
 
   /**
