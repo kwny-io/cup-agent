@@ -11,6 +11,7 @@
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Frame } from '../core/engine.ts';
 import { UpstreamFrameSchema, type UpstreamFrame } from '@cup/contract';
+import type { HelloFrame } from '../util/claim.ts';
 
 export interface WsHandle {
   broadcast: (frame: Frame) => void;
@@ -18,14 +19,34 @@ export interface WsHandle {
   clientCount: () => number;
 }
 
-export function startWsServer(port: number, onControl?: (msg: unknown) => void): WsHandle {
+export interface WsServerOptions {
+  onControl?: (msg: unknown) => void;
+  /**
+   * 握手帧工厂:每个客户端连上时调一次,产出的帧发给它。默认 `() => ({kind:'hello',v:1})`。
+   * 给可信绑定用 —— 传一个带 `{cup_id, device_id, claim, issued_at}` 的工厂(见 util/claim.ts),
+   * 后端 sim-adapter 便能把设备自报的 claim 交给绑定校验(pg 阶段 4 前置)。
+   * 不给则维持旧形(前端直连场景零变化)。
+   */
+  hello?: () => HelloFrame | { kind: 'hello'; v: 1 };
+}
+
+export function startWsServer(
+  port: number,
+  onControlOrOpts?: ((msg: unknown) => void) | WsServerOptions,
+): WsHandle {
+  // 兼容旧签名 `startWsServer(port, onControl)`(前端直连等既有调用点)。
+  const opts: WsServerOptions =
+    typeof onControlOrOpts === 'function' ? { onControl: onControlOrOpts } : (onControlOrOpts ?? {});
+  const onControl = opts.onControl;
+  const hello = opts.hello ?? ((): { kind: 'hello'; v: 1 } => ({ kind: 'hello', v: 1 }));
+
   const wss = new WebSocketServer({ port });
   const clients = new Set<WebSocket>();
 
   wss.on('connection', (sock) => {
     clients.add(sock);
-    // 握手:告诉客户端模拟器的设备标识
-    sock.send(JSON.stringify({ kind: 'hello', v: 1 }));
+    // 握手:告诉客户端模拟器的设备标识(带 claim 时即可信绑定的设备半)
+    sock.send(JSON.stringify(hello()));
     sock.on('close', () => clients.delete(sock));
     sock.on('message', (data) => {
       try {

@@ -20,6 +20,7 @@ import { PgStore } from '../src/store/pg/store.ts';
 import { PgChatStore } from '../src/store/pg/chat.ts';
 import { PgAccountsStore } from '../src/store/pg/accounts.ts';
 import { PgProfileStore } from '../src/store/pg/profile.ts';
+import { PgCupLlmStore } from '../src/store/pg/cup-llm.ts';
 import { createPgPool, type Pool } from '../src/store/pg/pool.ts';
 import { migrate } from '../src/store/pg/migrate.ts';
 
@@ -279,7 +280,7 @@ if (!PG_URL) {
   const TABLES = [
     'users', 'sessions', 'packs', 'subscriptions', 'friends',
     'cup_settings', 'cup_latest', 'daily_agg', 'telemetry', 'events',
-    'chat_turns', 'chat_profile', 'cup_traits', 'memory_cards', 'cup_claims',
+    'chat_turns', 'chat_profile', 'cup_traits', 'memory_cards', 'cup_claims', 'cup_llm',
   ].join(', ');
   const fresh = async (): Promise<Store> => {
     await pool.query(`TRUNCATE ${TABLES} RESTART IDENTITY CASCADE`);
@@ -383,6 +384,28 @@ if (!PG_URL) {
     };
     await p.set(CUP, rec);
     assert.deepEqual(await p.get(CUP), rec);
+  });
+
+  // 每杯模型配置(BYOK;表 0004_cup_llm.sql)—— get/set/upsert/delete 语义对齐内存实现
+  test('[Pg] PgCupLlmStore：get/set/upsert/delete(密文原样搬)', async () => {
+    await pool.query(`TRUNCATE ${TABLES} RESTART IDENTITY CASCADE`);
+    const llm = new PgCupLlmStore(pool);
+    assert.equal(await llm.get(CUP), null);
+    const cfg = {
+      cup_id: CUP, provider: 'anthropic' as const, model: 'claude-sonnet-4-6',
+      base_url: 'https://proxy.local/v1/messages', key_enc: 'iv.tag.cipher', updated_at: 1,
+    };
+    await llm.set(CUP, cfg);
+    assert.deepEqual(await llm.get(CUP), cfg);
+    // 覆盖：同 cup_id → ON CONFLICT DO UPDATE(不新增行、字段全换)
+    await llm.set(CUP, { ...cfg, model: 'claude-opus-4-1', base_url: undefined, updated_at: 2 });
+    const after = await llm.get(CUP);
+    assert.equal(after?.model, 'claude-opus-4-1');
+    assert.equal(after?.base_url, undefined, 'base_url 清空后回 undefined(不是空串)');
+    // 删：无行 no-op、有行清掉
+    await llm.delete(CUP);
+    assert.equal(await llm.get(CUP), null);
+    await llm.delete(CUP); // 二次删 no-op
   });
 
   test('[Pg] teardown：DROP SCHEMA CASCADE', async () => {

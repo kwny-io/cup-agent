@@ -23,12 +23,21 @@ import { FileAccountsStore, MemoryAccountsStore } from './core/social/accounts.t
 import type { AccountsStore } from './core/social/types.ts';
 import { ClaimService, resolveClaimPepper } from './core/social/claim.ts';
 import { FileProfileStore, MemoryProfileStore, type ProfileStore } from './core/traits.ts';
+import {
+  CupLlmService,
+  FileCupLlmStore,
+  MemoryCupLlmStore,
+  cupLlmFilePath,
+  resolveLlmEncKey,
+  type CupLlmStore,
+} from './core/cup-llm.ts';
 import { ProactiveScheduler } from './core/proactive.ts';
 import { createPgPool, type Pool } from './store/pg/pool.ts';
 import { PgStore } from './store/pg/store.ts';
 import { PgChatStore } from './store/pg/chat.ts';
 import { PgAccountsStore } from './store/pg/accounts.ts';
 import { PgProfileStore } from './store/pg/profile.ts';
+import { PgCupLlmStore } from './store/pg/cup-llm.ts';
 import { randomBytes } from 'node:crypto';
 import type { Server } from 'node:http';
 
@@ -95,6 +104,10 @@ export interface AppOptions {
   accounts?: AccountsStore;
   /** 人格档案存储(#72);不给则随 dataDir 走文件实现,否则内存 */
   profiles?: ProfileStore;
+  /** 每杯模型配置(BYOK);不给则随 pgUrl / dataDir 选实现,否则内存 */
+  cupLlm?: CupLlmStore;
+  /** 每杯 key 的**加密**密钥;不给则由 env `CUP_LLM_ENC_KEY` / dataDir 解析(见 resolveLlmEncKey) */
+  llmEncKey?: Buffer;
   /**
    * 首个管理员引导邮箱(cli 从 env `CUP_ADMIN_EMAIL` 读入)。注册命中该邮箱 →
    * role='admin'。**不新增注册口子**:管理员也只能走正常注册。
@@ -124,6 +137,8 @@ export interface App {
   claims: ClaimService;
   /** 人格档案存储(#72:昵称 + 派生性格快照) */
   profiles: ProfileStore;
+  /** 每杯模型配置门面(BYOK;见 core/cup-llm.ts) */
+  cupLlm: CupLlmService;
   /** 文件持久化句柄(未启用 dataDir 时为 null) */
   persist: FilePersistence | null;
   /** 主动开口调度器(未开启 proactive 时为 null) */
@@ -183,6 +198,16 @@ export function createApp(opts: AppOptions = {}): App {
   // 可信绑定(claim code):收码规则厚、路由薄;pepper 由 env/dataDir 解析(明文码绝不落盘)。
   const claimPepper = opts.claimPepper ?? resolveClaimPepper(opts.dataDir);
   const claims = new ClaimService({ store: accounts, pepper: claimPepper, log });
+  // 每杯模型配置(BYOK):key 密文落库,门面把加解密收在 core 里(HTTP 层不碰 crypto)。
+  const cupLlmStore =
+    opts.cupLlm ??
+    (pool
+      ? new PgCupLlmStore(pool)
+      : opts.dataDir
+        ? new FileCupLlmStore(cupLlmFilePath(opts.dataDir))
+        : new MemoryCupLlmStore());
+  const llmEncKey = opts.llmEncKey ?? resolveLlmEncKey(opts.dataDir);
+  const cupLlm = new CupLlmService({ store: cupLlmStore, key: llmEncKey });
   const cups = opts.cups ?? [];
 
   // 主动开口(P5):只有显式开启才起 —— 默认关,免得测试/离线环境里乱说话。
@@ -222,7 +247,7 @@ export function createApp(opts: AppOptions = {}): App {
     llm,
     chatLlm,
     chatMemory,
-    resolveChatLlm: opts.resolveChatLlm,
+    resolveChatLlm: opts.resolveChatLlm ?? ((cupId) => cupLlm.chatLlm(cupId)),
     apiKey,
     allowUnauth: opts.allowUnauth,
     readAuth: opts.readAuth,
@@ -231,6 +256,7 @@ export function createApp(opts: AppOptions = {}): App {
     adminEmail: opts.adminEmail,
     claims,
     requireClaim: opts.requireClaim,
+    cupLlm,
     log,
   });
   live.attach(server);
@@ -249,6 +275,7 @@ export function createApp(opts: AppOptions = {}): App {
     accounts,
     claims,
     profiles,
+    cupLlm,
     persist,
     proactive,
     apiKey: apiKey ?? null,
@@ -273,6 +300,7 @@ export function createApp(opts: AppOptions = {}): App {
       await chatMemory.flush(); // 会话记忆落盘(内存/Pg 实现 no-op)
       await accounts.flush(); // 账号 / 会话 / 市场 / 社交落盘(内存/Pg 实现 no-op)
       await profiles.flush(); // 人格档案落盘(内存/Pg 实现 no-op)
+      await cupLlm.flush(); // 每杯模型配置落盘(内存/Pg 实现 no-op)
       await persist?.flush(); // 目标 + 画像落盘(仅文件实现)
       await pool?.end(); // 关 pg 连接池(仅 Pg 模式)
       await new Promise<void>((r) => server.close(() => r()));

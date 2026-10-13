@@ -84,6 +84,7 @@ export { PgStore } from './store/pg/store.ts';
 export { PgChatStore } from './store/pg/chat.ts';
 export { PgAccountsStore } from './store/pg/accounts.ts';
 export { PgProfileStore } from './store/pg/profile.ts';
+export { PgCupLlmStore } from './store/pg/cup-llm.ts';
 export {
   register,
   login,
@@ -124,6 +125,28 @@ export {
   type HelloFrame,
   type ClaimServiceOptions,
 } from './core/social/claim.ts';
+export {
+  CupLlmService,
+  MemoryCupLlmStore,
+  FileCupLlmStore,
+  cupLlmFilePath,
+  encryptSecret,
+  decryptSecret,
+  resolveLlmEncKey,
+  buildChatLlm,
+  buildLlm,
+  OpenAiChatLlm,
+  toOpenAiMessages,
+  toCupLlmPublic,
+  isCupLlmProvider,
+  DEFAULT_CHAT_URL,
+  DEFAULT_CHAT_MODEL,
+  type CupLlmConfig,
+  type CupLlmPublic,
+  type CupLlmProvider,
+  type CupLlmStore,
+  type CupLlmInput,
+} from './core/cup-llm.ts';
 export {
   normalizeEmail,
   friendPair,

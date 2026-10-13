@@ -20,6 +20,18 @@ export function uniform(rng: () => number, min: number, max: number): number {
 }
 
 /**
+ * 由模拟器 seed 派生一个 64 位子种子 —— 同 `seed` + 同 `salt` → 同值(可复现),
+ * 不同 `salt` → 不同流(各用途互不串扰)。供 claim code 这类"要 64 位一次性值"的地方用
+ * (claim 用 splitmix64 吃 64 位种子,见 util/claim.ts)。
+ */
+export function deriveSeed64(seed: number, salt: number): bigint {
+  const rng = createRng(seed ^ Math.imul(salt, 0x9e3779b1));
+  const hi = BigInt(Math.floor(rng() * 0x1_0000_0000));
+  const lo = BigInt(Math.floor(rng() * 0x1_0000_0000));
+  return (hi << 32n) | lo;
+}
+
+/**
  * 在期望值附近取高斯噪声(Box–Muller)。
  * 注意:高斯噪声理论上无界,这里截到 ±3σ,避免偶发离谱读数污染"稳定性检测"。
  */

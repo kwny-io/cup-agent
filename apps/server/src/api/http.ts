@@ -43,6 +43,7 @@ import { enrichReport, type Llm } from '../core/llm.ts';
 import { runChat, type ChatDeps } from '../core/chat/agent.ts';
 import { NullChatLlm } from '../core/chat/mock.ts';
 import type { ChatLlm } from '../core/chat/types.ts';
+import { isCupLlmProvider, type CupLlmService } from '../core/cup-llm.ts';
 import { MemoryChatStore, type ChatStore } from '../core/chat/memory.ts';
 import { ingestEnvelope } from '../ingest/http-adapter.ts';
 import { MemoryAccountsStore } from '../core/social/accounts.ts';
@@ -106,6 +107,8 @@ export interface ApiDeps {
   adminEmail?: string;
   /** 可信绑定核验(claim code);见 core/social/claim.ts */
   claims?: ClaimService;
+  /** 每杯模型配置(BYOK);给了则 `/ask` 用该杯自己的模型,并开放 `/cups/:id/llm` 读写口 */
+  cupLlm?: CupLlmService;
   /**
    * 绑定杯子须出示一次性 claim code(默认 false → 只校验 cup_id 形状,与旧行为一致)。
    * 设备/模拟器两半验收后由用户开。
@@ -192,7 +195,7 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
     return await socialTeamRoute(req, res, deps);
   }
 
-  const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|profile|memory)$/);
+  const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|profile|memory|llm)$/);
   if (!m) {
     send(res, 404, { error: 'not found', path });
     return;
@@ -200,6 +203,9 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
   const cupId = decodeURIComponent(m[1]!);
   const action = m[2]!;
   const method = req.method ?? 'GET';
+
+  // `/llm` = 用户给"自己那只杯"配模型(BYOK)→ 走**账号会话**闸(同 /social/*),不走设备 x-api-key。
+  if (action === 'llm') return await cupLlmRoute(req, res, deps, cupId);
 
   // 写端点守卫(R10):仅在配了 key 时启用。读端点 / healthz 不受影响。
   if (!authorize(req, res, deps, method, action)) return;
@@ -997,7 +1003,7 @@ async function askRoute(
   }
   // 用户自选模型:配了(stored 非 null)则本杯走**账户鉴权** —— 登录 401 / 非本杯 403,
   // 并改用该杯模型;未配 → 下面的 chatDeps.chat 回退全局 chatLlm(设备/单杯旧路径零变化)。
-  let chat: ChatLlm | null = deps.resolveChatLlm ? await deps.resolveChatLlm(cupId) : null;
+  const chat: ChatLlm | null = deps.resolveChatLlm ? await deps.resolveChatLlm(cupId) : null;
   if (chat) {
     const user = await resolveSession(
       { store: deps.accounts!, adminEmail: deps.adminEmail },
@@ -1022,6 +1028,87 @@ async function askRoute(
   } catch (err) {
     send(res, 500, { error: (err as Error).message });
   }
+}
+
+/**
+ * 归属校验 —— 会话用户是否是这只杯的主人(`Account.cup_id` 指向该杯)。
+ * 与 `/llm` / 将来的删除端点共用:数据随杯走,故"能操作这只杯"= 账户已绑它。
+ * 未绑 / 绑的是别只杯 → 一律 403(**不区分**,不给探测他人杯 id 的 oracle)。
+ * @returns true = 放行;false = 已回 403,调用方应 return。
+ */
+async function guardCupOwner(
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+  userId: string,
+): Promise<boolean> {
+  const acct = await deps.accounts!.accountById(userId);
+  if (acct?.cup_id !== cupId) {
+    send(res, 403, { error: '无权操作该杯' });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 每杯模型配置(BYOK)—— `GET/PUT/DELETE /cups/:id/llm`。
+ *
+ * 与设备写端点(/goal、/config 走 x-api-key)**不同**:这是"用户给自己那只杯配模型",
+ * 是**账号行为** → 走**会话闸**(Authorization: Bearer,同 /social/*),再叠**归属**:
+ * 只有已绑这只杯的用户能读写它的模型配置(否则 403)。
+ *
+ * 出口永远是 `CupLlmPublic` —— 绝不含 key(明文或密文);`key` 进来只经 `CupLlmService`
+ * 加密后落库,HTTP 层不碰 crypto、不回显。
+ */
+async function cupLlmRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
+  if (!me) return;
+  if (!(await guardCupOwner(res, deps, cupId, me.user_id))) return;
+  const svc = deps.cupLlm;
+  if (!svc) return send(res, 503, { error: '本实例未启用每杯模型配置' });
+  const method = req.method ?? 'GET';
+
+  if (method === 'GET') {
+    const cfg = await svc.get(cupId);
+    return send(res, 200, { cup_id: cupId, config: cfg });
+  }
+
+  if (method === 'DELETE') {
+    await svc.clear(cupId);
+    return send(res, 200, { cup_id: cupId, config: null });
+  }
+
+  if (method !== 'PUT') return send(res, 405, { error: 'use GET, PUT or DELETE' });
+
+  const body = await readJson(req);
+  const b = (body ?? {}) as Record<string, unknown>;
+  const provider = b.provider;
+  if (!isCupLlmProvider(provider)) {
+    return send(res, 400, { error: "provider 需为 'anthropic' 或 'openai'" });
+  }
+  const model = typeof b.model === 'string' ? b.model.trim() : '';
+  if (model.length === 0 || model.length > 128) {
+    return send(res, 400, { error: 'model 需为非空字符串(≤128 字)' });
+  }
+  let baseUrl: string | undefined;
+  if (typeof b.base_url === 'string' && b.base_url.trim().length > 0) {
+    if (b.base_url.length > 512) return send(res, 400, { error: 'base_url 过长' });
+    baseUrl = b.base_url.trim();
+  }
+  // key 可省 / 空串 → 沿用已有密文(只改模型/端点时不逼用户重填 key)。
+  let key: string | undefined;
+  if (typeof b.key === 'string' && b.key.trim().length > 0) {
+    if (b.key.length > 4096) return send(res, 400, { error: 'key 过长' });
+    key = b.key.trim();
+  }
+  const input = baseUrl !== undefined ? { provider, model, base_url: baseUrl, key } : { provider, model, key };
+  const cfg = await svc.set(cupId, input);
+  send(res, 200, { cup_id: cupId, config: cfg });
 }
 
 /**
