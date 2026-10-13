@@ -75,6 +75,10 @@ typedef enum {
     EVENT_TILT_ALERT,
     EVENT_LOW_BATTERY,
     EVENT_OFF_BASE,
+    // 手势(盖内压力传感器,创意备忘 §5.1 #1):轻磕 / 长按 → 确认。
+    // tap=短促接触;long_press=持续按压。分类由固件按 duration_ms 阈值定,契约只装结论。
+    EVENT_TAP,
+    EVENT_LONG_PRESS,
 } event_type_t;
 
 /** 谁算出来的;必须与 DERIVED_BY 逐字一致。 */
@@ -135,7 +139,8 @@ typedef struct {
 // ── §4 上行 · 事件 ────────────────────────────────────────────────
 /**
  * 一个事件。`amount_ml` 只在 drink/refill 时有效(契约 .refine:
- * amount_ml 必须且仅在 drink/refill 时携带);序列化时按 type 自动取舍。
+ * amount_ml 必须且仅在 drink/refill 时携带);`duration_ms` 只在 tap/long_press
+ * 时有效(镜像同一条 refine);序列化时均按 type 自动取舍。
  */
 typedef struct {
     uint64_t ts;          // Unix 毫秒(同 lid,必须 64 位)
@@ -144,6 +149,8 @@ typedef struct {
     float amount_ml;
     bool has_temp;        // temp_alert 时可带
     float temp_c;
+    bool has_duration;    // tap/long_press 必为 true,其余必须 false
+    int duration_ms;      // 手势接触/按压时长(ms),≥0
     float confidence;     // 0..1
     derived_by_t derived_by;
 } cup_event_t;

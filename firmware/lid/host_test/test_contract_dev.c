@@ -44,6 +44,8 @@ static void test_enum_strings(void) {
     ok(strcmp(event_type_str(EVENT_DRINK), "drink") == 0, "event drink");
     ok(strcmp(event_type_str(EVENT_TEMP_ALERT), "temp_alert") == 0, "event temp_alert");
     ok(strcmp(event_type_str(EVENT_OFF_BASE), "off_base") == 0, "event off_base");
+    ok(strcmp(event_type_str(EVENT_TAP), "tap") == 0, "event tap(手势加法)");
+    ok(strcmp(event_type_str(EVENT_LONG_PRESS), "long_press") == 0, "event long_press(手势加法)");
     ok(strcmp(derived_by_str(DERIVED_BY_LID), "lid") == 0, "derived_by lid");
     ok(strcmp(derived_by_str(DERIVED_BY_BASE), "base") == 0, "derived_by base");
 }
@@ -137,6 +139,33 @@ static void test_event_envelope(void) {
     ok(has(buf, "\"temp_c\":70.0"), "temp_alert 带 temp_c");
 }
 
+static void test_gesture_envelope(void) {
+    printf("[手势事件 · duration_ms 仅 tap/long_press]\n");
+    char buf[512];
+    cup_event_t g = {0};
+    g.ts = 3000; g.type = EVENT_TAP; g.has_duration = true; g.duration_ms = 120;
+    g.confidence = 0.9f; g.derived_by = DERIVED_BY_LID;
+    ok(cup_event_to_envelope(&g, "cup-A1B2C3", "lid-A1B2C3", buf, sizeof(buf)) > 0, "tap 序列化成功");
+    ok(has(buf, "\"type\":\"tap\""), "type=tap");
+    ok(has(buf, "\"duration_ms\":120"), "tap 带 duration_ms");
+    ok(!has(buf, "amount_ml"), "tap 不带 amount_ml");
+
+    cup_event_t l = {0};
+    l.ts = 4000; l.type = EVENT_LONG_PRESS; l.has_duration = true; l.duration_ms = 900;
+    l.confidence = 0.9f; l.derived_by = DERIVED_BY_LID;
+    ok(cup_event_to_envelope(&l, "cup-A1B2C3", "lid-A1B2C3", buf, sizeof(buf)) > 0, "long_press 序列化成功");
+    ok(has(buf, "\"type\":\"long_press\""), "type=long_press");
+    ok(has(buf, "\"duration_ms\":900"), "long_press 带 duration_ms");
+
+    // 即使调用方误置 has_duration 与 has_amount,drink 也**不得**带 duration_ms(契约 .refine 会拒收)
+    cup_event_t d = {0};
+    d.ts = 5000; d.type = EVENT_DRINK; d.has_amount = true; d.amount_ml = 180.0f;
+    d.has_duration = true; d.duration_ms = 50; d.confidence = 0.95f; d.derived_by = DERIVED_BY_BASE;
+    ok(cup_event_to_envelope(&d, "cup-A1B2C3", "base-A1B2C3", buf, sizeof(buf)) > 0, "drink 序列化成功");
+    ok(has(buf, "\"amount_ml\":180.0"), "drink 带 amount_ml");
+    ok(!has(buf, "duration_ms"), "drink 不带 duration_ms(关键:契约 refine)");
+}
+
 static void test_base_envelope(void) {
     printf("[base 遥测信封]\n");
     base_telemetry_t b = {0};
@@ -190,6 +219,7 @@ int main(void) {
     test_lid_no_optional();
     test_base_envelope();
     test_event_envelope();
+    test_gesture_envelope();
     test_buffer_guard();
     printf("\n== %d/%d 通过,%d 失败 ==\n", g_total - g_fail, g_total, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -99,10 +99,10 @@ CC=/c/mingw64/mingw64/bin/gcc.exe bash lid/host_test/run_all.sh
 
 (Linux/macOS 或已把 gcc 放进 PATH:直接 `bash lid/host_test/run_all.sh`。)
 
-当前**二十组、共 536 条**断言全绿:
+当前**二十组、共 548 条**断言全绿:
 
-- `contract_dev` 59 条 —— 枚举字符串逐字、换算对齐 `constants.ts`、盖/底座两种信封字段、
-  `ts` 13 位不回绕、`amount_ml` 仅 drink/refill、**base 无 imu/rssi 字段**、缓冲不足不越界
+- `contract_dev` 71 条 —— 枚举字符串逐字(含手势 `tap`/`long_press`)、换算对齐 `constants.ts`、盖/底座两种信封字段、
+  `ts` 13 位不回绕、`amount_ml` 仅 drink/refill、`duration_ms` 仅 tap/long_press、**base 无 imu/rssi 字段**、缓冲不足不越界
 - `lid_logic` 37 条 —— shake 能量/连续帧/400ms hold、tilt 35°&2s、**lifted(低模长 <0.8g 持续 200ms)**、温度与电量滞回、优先级 shake>tilt>lifted>idle
 - `command_parse` 19 条 —— 非本机/未知 type/过期/无 id 过滤、cmd_id 去重、嵌套 payload 跳过
 - `sensor_source` 9 条 —— 合成源长时间扫描恒在契约合法区间、静止不误触 shake
@@ -416,6 +416,11 @@ broker/网络断掉时的遥测不再丢:数据先入 `uplink_buffer`(有界 FIF
   `IMU_*` / `ALERT_*` / `SCALE_*` 宏,改契约时只此一处。
 - **手写 JSON,不引 cJSON**:字段少、形状固定,手写更短更可读、零依赖。代价是字段名必须
   一字不差 —— 故全部集中在 `contract_dev.c`,并用宿主单测钉住。
+- **契约镜像有机器守卫**:`contract_dev.h` 那句"必须与 `EVENT_TYPES` 逐字一致"曾只是
+  靠人守的承诺 —— 2026-10-14 契约加手势 `tap`/`long_press` 时镜像漏跟,承诺当场变假话。
+  现由 `firmware/host_test/contract-mirror.test.ts`(随根 `npm test`/CI 跑)**机器守**:
+  直接读固件的 `event_type_t` / `motion_state_t` / `derived_by_t` 与契约枚举对表,
+  多一个/少一个/串拼错、或 `<enum>_str()` 漏 case,都红。
 - **下行真执行分三层**(M7):`command_parse` 只挑"该不该执行"(cmd_id/type/expires),
   **刻意不碰 payload**;`cmd_payload` 拿到原文后按 cmd_id 定位、取 payload 整数字段;
   `cmd_exec` 裁定生效值(夹紧边界)。取值与裁定都是纯 C,故边界可在 PC 上钉死 ——

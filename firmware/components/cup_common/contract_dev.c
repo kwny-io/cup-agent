@@ -66,6 +66,8 @@ const char *event_type_str(event_type_t t) {
         case EVENT_TILT_ALERT: return "tilt_alert";
         case EVENT_LOW_BATTERY: return "low_battery";
         case EVENT_OFF_BASE: return "off_base";
+        case EVENT_TAP: return "tap";
+        case EVENT_LONG_PRESS: return "long_press";
     }
     return "drink";
 }
@@ -174,6 +176,9 @@ int cup_event_to_envelope(const cup_event_t *e, const char *cup_id,
     // 免得调用方忘了置 has_amount 也发出非法帧。
     bool allow_amount = (e->type == EVENT_DRINK || e->type == EVENT_REFILL);
     bool emit_amount = allow_amount && e->has_amount;
+    // 镜像同一条 refine:duration_ms 必须且仅在 tap/long_press 时携带。
+    bool allow_duration = (e->type == EVENT_TAP || e->type == EVENT_LONG_PRESS);
+    bool emit_duration = allow_duration && e->has_duration;
 
     int off = 0;
     app(out, out_size, &off, "{\"kind\":\"event\",\"payload\":{\"v\":1");
@@ -184,6 +189,10 @@ int cup_event_to_envelope(const cup_event_t *e, const char *cup_id,
     if (emit_amount) {
         float amt = e->amount_ml < 0.0f ? 0.0f : e->amount_ml;
         app(out, out_size, &off, ",\"amount_ml\":%.1f", (double)amt);
+    }
+    if (emit_duration) {
+        int dur = e->duration_ms < 0 ? 0 : e->duration_ms;
+        app(out, out_size, &off, ",\"duration_ms\":%d", dur);
     }
     if (e->has_temp) {
         app(out, out_size, &off, ",\"temp_c\":%.1f", (double)e->temp_c);

@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit --pretty && tsc -p apps/web/tsconfig.json --noEmit",
-    "test": "node --test --test-reporter=spec \"apps/simulator/test/*.test.ts\" \"apps/server/test/*.test.ts\"",
+    "test": "node --test --test-reporter=spec \"apps/simulator/test/*.test.ts\" \"apps/server/test/*.test.ts\" \"firmware/host_test/*.test.ts\"",
     "sim": "node apps/simulator/src/cli.ts",
     "server": "node apps/server/src/cli.ts"
   },

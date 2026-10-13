@@ -2,7 +2,7 @@ name: CI
 
 # 每次推 main / 开 PR 都跑。四个互不依赖的闸:
 #   1. 类型检查  —— 根 tsc + apps/web 的 tsc(web 此前不在根脚本里,已并入 root typecheck)
-#   2. JS 测试   —— 契约 + 模拟器 + 后端(node --test,零基建:不设 CUP_PG_URL)
+#   2. JS 测试   —— 契约 + 模拟器 + 后端 + 固件契约镜像守护(node --test,零基建:不设 CUP_PG_URL)
 #   3. 固件宿主单测 —— 零 IDF 依赖的纯 C 层(gcc 直接编,见 firmware/README §一)
 #   4. Postgres 契约 —— 服务容器 + CUP_PG_URL,真跑 PgStore 半边(可选闸,挂了不红主套件)
 # 固件那一闸尤其关键:本机(开发机)不带 C 编译器,纯 C 层只能靠 CI 兜住。

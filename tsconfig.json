@@ -16,7 +16,8 @@
   "include": [
     "packages/*/src/**/*.ts",
     "apps/*/src/**/*.ts",
-    "apps/*/test/**/*.ts"
+    "apps/*/test/**/*.ts",
+    "firmware/host_test/**/*.ts"
   ],
   "exclude": [
     "apps/web"
