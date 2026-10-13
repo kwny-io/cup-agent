@@ -288,12 +288,55 @@ export interface TraitRecord {
   updated_at: number;
 }
 
-/** 登录用户的出口视图(后端绝不含 salt/hash) */
+/**
+ * 登录用户的出口视图(后端绝不含 salt/hash)。
+ *
+ * `role` 2026-10-14 由 `user|admin` 扩成四档(服务日志端):ops 可动手(触发保留、
+ * 看分区),reviewer 只读(查 + 导出)。**这是前端自身的类型** —— 与 packages/contract
+ * 无关(contract 冻结不动;角色是服务端自有域)。
+ */
 export interface PublicUser {
   user_id: string;
   email: string;
   nickname: string;
-  role: 'user' | 'admin';
+  role: 'user' | 'admin' | 'ops' | 'reviewer';
+}
+
+// ── 服务日志端(admin/ops/reviewer 回看)───────────────────────────
+// 与 B 定死的服务端契约逐字对齐(GET /admin/logs 等)。日志域是服务端自有,非契约。
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/** 一条落库日志 —— 与后端 `LogRow` 同形(冻结握手)。 */
+export interface LogRow {
+  ts: number; // unix ms
+  level: LogLevel;
+  src: string | null;
+  msg: string;
+  payload: Record<string, unknown>;
+}
+
+/** 查询条件(全部可选);`level` 可多值,`cursor` 原样回传(keyset 分页)。 */
+export interface LogQuery {
+  level?: LogLevel[];
+  src?: string;
+  q?: string;
+  from?: number;
+  to?: number;
+  limit?: number;
+  cursor?: string;
+}
+
+/** 一页日志 —— 后端回 `{logs, next_cursor}`,域内叫 `rows`(对齐内部 store 视图)。 */
+export interface LogPage {
+  rows: LogRow[];
+  next_cursor: string | null;
+}
+
+/** 一个日志分区及其占用(运维用);`bytes` 是 `pg_total_relation_size`。 */
+export interface LogPartition {
+  name: string;
+  bytes: number;
 }
 
 /** 管理后台的用户视图 —— 带 disabled(管理员要看出谁被禁了),仍无机密 */
@@ -445,6 +488,13 @@ export interface SocialApi {
   adminSetDisabled(userId: string, disabled: boolean): Promise<AdminUser | null>;
   adminListPacks(status?: PackStatus): Promise<PersonaPack[]>;
   adminVerdict(packId: string, approve: boolean): Promise<PersonaPack | null>;
+
+  // ── 服务日志端(admin/ops/reviewer 回看)──────────────────────
+  // 读/admin+ops+reviewer;retain 是写动作,仅 admin+ops(reviewer 服务端 403)。
+  // 失败一律归 null(照本接口"从不 reject"的既有契约;null → UI 显示"--")。
+  adminListLogs(q: LogQuery): Promise<LogPage | null>;
+  adminLogPartitions(): Promise<LogPartition[] | null>;
+  adminRetainLogs(): Promise<string[] | null>;
 
   // ── 杯子社交(#74)──
   listFriends(): Promise<FriendView[]>;

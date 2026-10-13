@@ -19,6 +19,9 @@ import type {
   CupLlmDraft,
   CupLlmPublic,
   FriendView,
+  LogPage,
+  LogPartition,
+  LogQuery,
   PackDraft,
   PackStatus,
   PersonaPack,
@@ -61,6 +64,24 @@ function safeSessionStorage(): Pick<Storage, 'getItem' | 'setItem' | 'removeItem
   } catch {
     return null;
   }
+}
+
+/**
+ * 日志查询 → query string(前导 `?`,无筛选则空串)。
+ * `level` 多值用逗号分隔(与后端"可重复或逗号"两法都收;逗号更短)。
+ * 保留字 `q` 走 encodeURIComponent —— 关键词可能带空格 / 中文。
+ */
+function logQueryString(q: LogQuery): string {
+  const p = new URLSearchParams();
+  if (q.level && q.level.length > 0) p.set('level', q.level.join(','));
+  if (q.src) p.set('src', q.src);
+  if (q.q) p.set('q', q.q);
+  if (typeof q.from === 'number') p.set('from', String(q.from));
+  if (typeof q.to === 'number') p.set('to', String(q.to));
+  if (typeof q.limit === 'number') p.set('limit', String(q.limit));
+  if (q.cursor) p.set('cursor', q.cursor);
+  const s = p.toString();
+  return s === '' ? '' : `?${s}`;
 }
 
 export class CloudSocial implements SocialApi {
@@ -295,6 +316,32 @@ export class CloudSocial implements SocialApi {
     const r = await this.req('POST', `/admin/packs/${encodeURIComponent(packId)}/${verb}`);
     if (!r.ok) return null;
     return (r.data as { pack?: PersonaPack }).pack ?? null;
+  }
+
+  // ── 服务日志端(admin/ops/reviewer)────────────────────────────
+  // 后端回 `{logs, next_cursor}`;此处整成域内 `LogPage`(rows + next_cursor)。
+
+  async adminListLogs(q: LogQuery): Promise<LogPage | null> {
+    const r = await this.req('GET', `/admin/logs${logQueryString(q)}`);
+    if (!r.ok) return null;
+    const d = r.data as { logs?: unknown; next_cursor?: unknown };
+    const rows = Array.isArray(d?.logs) ? (d.logs as LogPage['rows']) : [];
+    const next = typeof d?.next_cursor === 'string' ? d.next_cursor : null;
+    return { rows, next_cursor: next };
+  }
+
+  async adminLogPartitions(): Promise<LogPartition[] | null> {
+    const r = await this.req('GET', '/admin/logs/partitions');
+    if (!r.ok) return null;
+    const d = r.data as { partitions?: unknown };
+    return Array.isArray(d?.partitions) ? (d.partitions as LogPartition[]) : [];
+  }
+
+  async adminRetainLogs(): Promise<string[] | null> {
+    const r = await this.req('POST', '/admin/logs/retain');
+    if (!r.ok) return null;
+    const d = r.data as { dropped?: unknown };
+    return Array.isArray(d?.dropped) ? (d.dropped as string[]) : [];
   }
 
   // ── 杯子社交(#74)─────────────────────────────────────────────

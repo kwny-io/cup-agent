@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { act, createElement } from 'react';
 import { CommunityView } from '../src/components/CommunityView.tsx';
 import { AdminPanel } from '../src/components/AdminPanel.tsx';
+import { LogsView } from '../src/components/LogsView.tsx';
 import { AccountCard } from '../src/components/dashboard/AccountCard.tsx';
 import { ProfileCard } from '../src/components/dashboard/ProfileCard.tsx';
 import { LlmCard } from '../src/components/dashboard/LlmCard.tsx';
@@ -22,6 +23,9 @@ import type {
   CupLlmDraft,
   CupLlmPublic,
   FriendView,
+  LogPage,
+  LogPartition,
+  LogRow,
   PackDraft,
   PersonaPack,
   PublicUser,
@@ -44,6 +48,8 @@ const T: TraitRecord = {
 
 const USER: PublicUser = { user_id: 'u1', email: 'a@b.c', nickname: '小绿', role: 'user' };
 const ADMIN: PublicUser = { ...USER, user_id: 'ad', role: 'admin' };
+const OPS: PublicUser = { ...USER, user_id: 'op', role: 'ops' };
+const REVIEWER: PublicUser = { ...USER, user_id: 'rv', role: 'reviewer' };
 
 function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
   const base: SocialApi = {
@@ -65,6 +71,9 @@ function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
     adminSetDisabled: async () => null,
     adminListPacks: async () => [],
     adminVerdict: async () => null,
+    adminListLogs: async (): Promise<LogPage | null> => ({ rows: [], next_cursor: null }),
+    adminLogPartitions: async (): Promise<LogPartition[] | null> => [],
+    adminRetainLogs: async (): Promise<string[] | null> => [],
     listFriends: async () => [],
     addFriend: async () => null,
     getBoundCup: async () => null,
@@ -576,6 +585,133 @@ test('AdminPanel:真实点击「通过」调 adminVerdict(true),审完离队', a
   await flush();
   assert.deepEqual(seen, [{ id: 'p1', ok: true }]);
   assert.ok(!(host.textContent ?? '').includes('待审包'), '审完该包应离队');
+  unmount();
+});
+
+// ── 服务日志回看 ─────────────────────────────────────────────────
+
+function logRow(over: Partial<LogRow> = {}): LogRow {
+  return { ts: Date.UTC(2026, 9, 14, 1, 2, 3), level: 'info', src: 'http', msg: '一条日志', payload: {}, ...over };
+}
+
+test('LogsView:进页即拉一页,渲染日志行(时间/级别/来源/正文)', async () => {
+  const soc = fakeSocial({
+    adminListLogs: async (): Promise<LogPage | null> => ({
+      rows: [logRow({ msg: '杯子连上了' })],
+      next_cursor: null,
+    }),
+  });
+  const { host, unmount } = mount(createElement(LogsView, { social: soc, role: REVIEWER.role }));
+  await flush();
+  assert.match(host.textContent ?? '', /杯子连上了/);
+  assert.match(host.textContent ?? '', /info/);
+  assert.match(host.textContent ?? '', /http/);
+  unmount();
+});
+
+test('LogsView:真实点击「查询」把筛选拼进 LogQuery(级别多选 + 来源 + 关键词)', async () => {
+  const seen: unknown[] = [];
+  const soc = fakeSocial({
+    adminListLogs: async (q): Promise<LogPage | null> => {
+      seen.push(q);
+      return { rows: [], next_cursor: null };
+    },
+  });
+  const { host, unmount } = mount(createElement(LogsView, { social: soc, role: REVIEWER.role }));
+  await flush();
+  click(findButton(host, 'warn')!); // 级别 chip
+  click(findButton(host, 'error')!);
+  typeInto(host.querySelector('input[aria-label="来源"]') as HTMLInputElement, 'ws');
+  typeInto(host.querySelector('input[aria-label="关键词"]') as HTMLInputElement, '超时');
+  click(findButton(host, '查询')!);
+  await flush();
+  const last = seen[seen.length - 1] as {
+    level?: string[];
+    src?: string;
+    q?: string;
+  };
+  assert.deepEqual([...(last.level ?? [])].sort(), ['error', 'warn']);
+  assert.equal(last.src, 'ws');
+  assert.equal(last.q, '超时');
+  unmount();
+});
+
+test('LogsView:reviewer 只读 —— 不显示「触发保留清理」与分区', async () => {
+  let retainCalls = 0;
+  let partCalls = 0;
+  const soc = fakeSocial({
+    adminRetainLogs: async () => {
+      retainCalls++;
+      return [];
+    },
+    adminLogPartitions: async () => {
+      partCalls++;
+      return [{ name: 'server_logs_2026_07', bytes: 1024 }];
+    },
+  });
+  const { host, unmount } = mount(createElement(LogsView, { social: soc, role: REVIEWER.role }));
+  await flush();
+  assert.equal(findButton(host, '触发保留清理'), undefined, 'reviewer 不该看到写按钮');
+  assert.equal(partCalls, 0, 'reviewer 不该拉分区');
+  assert.equal(retainCalls, 0);
+  unmount();
+});
+
+test('LogsView:ops 可见分区占用;真实点击「触发保留清理」调 adminRetainLogs 并显示结果', async () => {
+  let retained = false;
+  const soc = fakeSocial({
+    adminLogPartitions: async (): Promise<LogPartition[] | null> => [
+      { name: 'server_logs_2026_07', bytes: 2_097_152 },
+    ],
+    adminRetainLogs: async (): Promise<string[] | null> => {
+      retained = true;
+      return ['server_logs_2026_07'];
+    },
+  });
+  const { host, unmount } = mount(createElement(LogsView, { social: soc, role: OPS.role }));
+  await flush();
+  assert.match(host.textContent ?? '', /server_logs_2026_07/);
+  assert.match(host.textContent ?? '', /2\.0 MB/);
+  click(findButton(host, '触发保留清理')!);
+  await flush();
+  assert.equal(retained, true);
+  assert.match(host.textContent ?? '', /已删除 1 个过期分区/);
+  unmount();
+});
+
+test('LogsView:加载失败(非授权会话)→ 报警,不静默', async () => {
+  const soc = fakeSocial({ adminListLogs: async (): Promise<LogPage | null> => null });
+  const { host, unmount } = mount(createElement(LogsView, { social: soc, role: ADMIN.role }));
+  await flush();
+  assert.match(host.querySelector('[role="alert"]')!.textContent ?? '', /加载失败/);
+  unmount();
+});
+
+test('LogsView:分页 —— next_cursor 非空时显示「加载更多」,点击续拉并追加', async () => {
+  let call = 0;
+  const soc = fakeSocial({
+    adminListLogs: async (): Promise<LogPage | null> => {
+      call++;
+      return call === 1
+        ? { rows: [logRow({ msg: '第一页' })], next_cursor: 'c1' }
+        : { rows: [logRow({ msg: '第二页' })], next_cursor: null };
+    },
+  });
+  const { host, unmount } = mount(createElement(LogsView, { social: soc, role: REVIEWER.role }));
+  await flush();
+  assert.ok(findButton(host, '加载更多'), '有 next_cursor 时应显示加载更多');
+  click(findButton(host, '加载更多')!);
+  await flush();
+  assert.match(host.textContent ?? '', /第一页/);
+  assert.match(host.textContent ?? '', /第二页/);
+  assert.equal(findButton(host, '加载更多'), undefined, '拉完应消失');
+  unmount();
+});
+
+test('LogsView 角色可见性:admin / ops / reviewer 看得见,user 进不来(App 侧 gate)', () => {
+  // 组件本身不 gate(App 才 gate);这里钉「reviewer 也渲染得出来」这一条
+  const { host, unmount } = mount(createElement(LogsView, { social: fakeSocial(), role: REVIEWER.role }));
+  assert.match(host.textContent ?? '', /服务日志/);
   unmount();
 });
 
