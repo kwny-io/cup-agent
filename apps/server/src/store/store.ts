@@ -52,6 +52,35 @@ export interface Store {
   memoryCard(cupId: string, date: string): Promise<MemoryCard | null>;
   /** 最近 n 天的卡(旧→新,只含有卡的天)。给 recall 用。 */
   recentMemoryCards(cupId: string, date: string, days: number): Promise<MemoryCard[]>;
+
+  // ── 删除:三档(第 4 阶段)──
+  /**
+   * 抹掉某杯的一部分数据(「被遗忘权」面,硬删、无墓碑)。**scope 决定删哪一档**:
+   *   · `'conversation'`/`'memory'` → 本 Store 名下无物可删(那些在 ChatStore / ProfileStore),
+   *     这里是 no-op —— 调用方(HTTP 层)会把三档**各自**打到对应的 store。
+   *   · `'all'` → 删本 Store 名下的全部:telemetry / events / daily_agg / goal / 最新样本 / 记忆卡。
+   * @returns 该档实际删掉的行数(给响应体,便于前端告知"清了多少")
+   */
+  forget(cupId: string, scope: DeleteScope): Promise<ForgetCounts>;
+}
+
+/**
+ * 三档删除的范围(见计划「三档删除」)。HTTP 层按 scope 把删除分派到四个 store:
+ *   · `conversation` → ChatStore.deleteTurns + deleteProfile(「聊过什么」)
+ *   · `memory`       → Store.forget('all') 里只删卡 + ProfileStore.delete(「那些日子」)
+ *   · `all`          → 上面全部 + Store.forget('all')(telemetry/events/agg/goal/样本/卡)
+ * Store.forget 只认 `'all'`(其余档在本 store 名下无事),由 HTTP 层拆解到各 store。
+ */
+export type DeleteScope = 'conversation' | 'memory' | 'all';
+
+/** 一次删除各表删掉的行数(响应体用;字段按数据域命名,便于前端逐项展示)。 */
+export interface ForgetCounts {
+  telemetry: number;
+  events: number;
+  daily_agg: number;
+  goal: number;
+  latest: number;
+  memory_cards: number;
 }
 
 // ── 日界 ─────────────────────────────────────────────────────────
@@ -226,6 +255,56 @@ export class MemoryStore implements Store {
       if (c) out.push(c);
     }
     return out;
+  }
+
+  // ── 删除:三档(第 4 阶段)──
+
+  async forget(cupId: string, scope: DeleteScope): Promise<ForgetCounts> {
+    const zero: ForgetCounts = {
+      telemetry: 0,
+      events: 0,
+      daily_agg: 0,
+      goal: 0,
+      latest: 0,
+      memory_cards: 0,
+    };
+    // conversation/memory 两档在本 Store 名下无物(在 ChatStore / ProfileStore)→ no-op。
+    // 记忆卡归 memory 档,但 Store 只在这一处碰它 —— 故 memory 档也删卡;其余档清空。
+    if (scope === 'conversation') return zero;
+
+    let cards = 0;
+    for (const key of this.cards.keys()) if (key.startsWith(`${cupId}|`)) cards += 1;
+
+    // memory 档**只**删卡(数值 rollup / 遥测归 all 档);别顺手多删 —— 那是另一档的事。
+    if (scope === 'memory') {
+      for (const key of [...this.cards.keys()]) if (key.startsWith(`${cupId}|`)) this.cards.delete(key);
+      return { ...zero, memory_cards: cards };
+    }
+
+    // all 档:本 Store 名下全抹。
+    const telemetry = this.telemetryByCup.get(cupId)?.length ?? 0;
+    const events = this.eventsByCup.get(cupId)?.length ?? 0;
+    let aggs = 0;
+    for (const key of this.aggs.keys()) if (key.startsWith(`${cupId}|`)) aggs += 1;
+
+    this.telemetryByCup.delete(cupId);
+    this.eventsByCup.delete(cupId);
+    for (const key of [...this.aggs.keys()]) if (key.startsWith(`${cupId}|`)) this.aggs.delete(key);
+    for (const key of [...this.cards.keys()]) if (key.startsWith(`${cupId}|`)) this.cards.delete(key);
+    for (const key of [...this.tempAcc.keys()]) if (key.startsWith(`${cupId}|`)) this.tempAcc.delete(key);
+
+    const hadGoal = this.goals.has(cupId);
+    const hadLatest = this.latest.has(cupId);
+    this.goals.delete(cupId);
+    this.latest.delete(cupId);
+    return {
+      telemetry,
+      events,
+      daily_agg: aggs,
+      goal: hadGoal ? 1 : 0,
+      latest: hadLatest ? 1 : 0,
+      memory_cards: cards,
+    };
   }
 
   /**

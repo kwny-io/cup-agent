@@ -50,6 +50,15 @@ export class FileChatStore implements ChatStore {
     this.file.setDistilledAt(cupId, ts);
   }
 
+  async deleteTurns(cupId: string): Promise<void> {
+    delete this.turns[cupId]; // 持的是 file.turns() 的同一引用,删即从 state 移除
+    this.file.dropTurns(cupId);
+  }
+
+  async deleteProfile(cupId: string): Promise<void> {
+    this.file.dropProfile(cupId); // 一并抹掉画像 + 蒸馏水位
+  }
+
   async flush(): Promise<void> {
     await this.file.flush();
   }

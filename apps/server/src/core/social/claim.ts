@@ -30,6 +30,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AccountsStore, CupClaim } from './types.ts';
+import type { LogLevel } from '../logger.ts';
 
 /** Crockford Base32 字母表(恰 32 字符;无 I/L/O/U)—— 必须与固件 `CUP_CLAIM_ALPHABET` 逐字一致 */
 export const CLAIM_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -121,7 +122,7 @@ export interface ClaimServiceOptions {
   maxFailures?: number;
   lockMs?: number;
   now?: () => number;
-  log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  log?: (msg: string, level?: LogLevel) => void;
 }
 
 interface FailureState {
@@ -140,7 +141,7 @@ export class ClaimService {
   private readonly maxFailures: number;
   private readonly lockMs: number;
   private readonly now: () => number;
-  private readonly log: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  private readonly log: (msg: string, level?: LogLevel) => void;
   /** device_id → 连续失败 / 锁定状态(内存态) */
   private readonly failures = new Map<string, FailureState>();
 

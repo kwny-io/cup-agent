@@ -15,8 +15,8 @@
 import type { CupEvent } from '@cup/contract';
 import type { DailyAgg, FusedSample, MemoryCard, MemoryCardDetails, TelemetryPoint } from '../../core/types.ts';
 import { dayKey, dayStart, shiftDay } from '../../core/day-boundary.ts';
-import { DEFAULT_GOAL_ML, type Store } from '../store.ts';
-import { query, queryOne, type Pool } from './pool.ts';
+import { DEFAULT_GOAL_ML, type DeleteScope, type ForgetCounts, type Store } from '../store.ts';
+import { query, queryOne, withTransaction, type Pool } from './pool.ts';
 
 interface AggRow {
   cup_id: string;
@@ -302,6 +302,42 @@ export class PgStore implements Store {
     );
     // 只含有卡的天(缺天不补 —— 与 memory 实现一致:sparse)
     return rows.map((r) => ({ cup_id: cupId, date: r.date, details: r.details, built_at: r.built_at }));
+  }
+
+  // ── 删除:三档(第 4 阶段)─────────────────────────────────────
+  //
+  // conversation 档在本 Store 名下无物(在 ChatStore)→ no-op。memory 档只删记忆卡;
+  // all 档连 telemetry/events/daily_agg/goal/最新样本一并抹。多表删除收在一个事务里,
+  // 半删(删了 events 没删 agg)不可接受。行数用各 DELETE 的 rowCount 汇报。
+  async forget(cupId: string, scope: DeleteScope): Promise<ForgetCounts> {
+    const zero: ForgetCounts = {
+      telemetry: 0,
+      events: 0,
+      daily_agg: 0,
+      goal: 0,
+      latest: 0,
+      memory_cards: 0,
+    };
+    if (scope === 'conversation') return zero;
+
+    return withTransaction(this.pool, async (client) => {
+      const cards = await client.query(`DELETE FROM memory_cards WHERE cup_id = $1`, [cupId]);
+      if (scope === 'memory') return { ...zero, memory_cards: cards.rowCount ?? 0 };
+
+      const telemetry = await client.query(`DELETE FROM telemetry WHERE cup_id = $1`, [cupId]);
+      const events = await client.query(`DELETE FROM events WHERE cup_id = $1`, [cupId]);
+      const aggs = await client.query(`DELETE FROM daily_agg WHERE cup_id = $1`, [cupId]);
+      const goal = await client.query(`DELETE FROM cup_settings WHERE cup_id = $1`, [cupId]);
+      const latest = await client.query(`DELETE FROM cup_latest WHERE cup_id = $1`, [cupId]);
+      return {
+        telemetry: telemetry.rowCount ?? 0,
+        events: events.rowCount ?? 0,
+        daily_agg: aggs.rowCount ?? 0,
+        goal: goal.rowCount ?? 0,
+        latest: latest.rowCount ?? 0,
+        memory_cards: cards.rowCount ?? 0,
+      };
+    });
   }
 
   // ── 内部 ───────────────────────────────────────────────────────

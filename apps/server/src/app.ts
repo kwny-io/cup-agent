@@ -32,6 +32,7 @@ import {
   type CupLlmStore,
 } from './core/cup-llm.ts';
 import { ProactiveScheduler } from './core/proactive.ts';
+import { createLogger, type LogLevel } from './core/logger.ts';
 import { createPgPool, type Pool } from './store/pg/pool.ts';
 import { PgStore } from './store/pg/store.ts';
 import { PgChatStore } from './store/pg/chat.ts';
@@ -120,7 +121,12 @@ export interface AppOptions {
   requireClaim?: boolean;
   /** claim 的 pepper;不给则由 env `CUP_CLAIM_PEPPER` / dataDir 解析(见 resolveClaimPepper) */
   claimPepper?: Buffer;
-  log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  /** 日志函数;不给则用内置结构化 logger(级别/格式见下两参) */
+  log?: (msg: string, level?: LogLevel) => void;
+  /** 内置 logger 的最低级别(缺省 info;env CUP_LOG_LEVEL) */
+  logLevel?: LogLevel;
+  /** 内置 logger 的输出格式(缺省 text;env CUP_LOG_FORMAT=json 切 JSON) */
+  logFormat?: 'text' | 'json';
 }
 
 export interface App {
@@ -157,7 +163,7 @@ export interface App {
 }
 
 export function createApp(opts: AppOptions = {}): App {
-  const log = opts.log ?? ((m, l = 'info') => console[l](m));
+  const log = opts.log ?? createLogger({ level: opts.logLevel, format: opts.logFormat });
   // 有 dataDir → 文件持久化:目标恢复 + 变更回调 + 对话轮落盘(ADR T14)。
   // 用一个可选钩子接进 MemoryStore,**不动 Store 接口**(T3「只换实现,不动上层」)。
   // 注意:选 Pg 时不建 persist(持久化的活儿归 DB;state.json 不参与)。

@@ -11,6 +11,7 @@
  */
 import { connect } from 'mqtt';
 import type { MqttTransport, MqttTransportMessage } from './mqtt-transport.ts';
+import type { LogLevel } from '../core/logger.ts';
 
 /**
  * 等 PUBACK 的上限(ms)。超过就当作没送达 → 上层回队重试(R11)。
@@ -20,7 +21,7 @@ const PUBACK_TIMEOUT_MS = 5000;
 
 export interface NodeMqttTransportOptions {
   url: string;
-  log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  log?: (msg: string, level?: LogLevel) => void;
   /**
    * 客户端 id。多实例部署时**必须各不相同** ——
    * MQTT-3.1.4 规定同 id 的两个客户端会互相踢下线,默认 id 撞了会永远翻飞。

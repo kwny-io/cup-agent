@@ -137,3 +137,88 @@ export async function dropPartition(pool: Pool, table: string, tag: string): Pro
   }
   await query(pool, `DROP TABLE IF EXISTS ${table}_${tag}`);
 }
+
+// ── 保留策略(第 5 阶段)────────────────────────────────────────────
+// 遥测留 ~90 天、事件留 ~13 个月(十万用户下 telemetry 约 58M 行/天,逐行删跑不动)。
+// **删整分区**是唯一可行解,也是**不可逆**的一步 → 默认不开,须显式 `--retain`/`CUP_RETENTION=1`。
+
+/** 遥测默认保留天数。 */
+export const DEFAULT_TELEMETRY_RETAIN_DAYS = 90;
+/** 事件默认保留天数(约 13 个月,跨年可查)。 */
+export const DEFAULT_EVENTS_RETAIN_DAYS = 395;
+
+export interface RetentionOptions {
+  /** 遥测保留天数(默认 90;cli 读 `CUP_TELEMETRY_RETAIN_DAYS`)。 */
+  telemetryDays?: number;
+  /** 事件保留天数(默认 395;cli 读 `CUP_EVENTS_RETAIN_DAYS`)。 */
+  eventsDays?: number;
+  /** 基准时刻(默认当前;测试注入用)。 */
+  now?: number;
+}
+
+/** 从环境变量读一个非负整数天数;缺省/非法 → fallback(不抛,免得配错一个值就起不来)。 */
+export function retainDaysFromEnv(name: string, fallback: number, env = process.env): number {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.floor(n);
+}
+
+/**
+ * 纯逻辑:给定已有分区 tag(如 `202601`)与保留天数,算出该删哪些。
+ *
+ * 口径(**删整月,不逐行**):
+ *   · 分区 M 覆盖 `[monthStart(M), monthStart(M+1))`;只有当它**整段**都早于 cutoff
+ *     (`monthStart(M) < cutoff 所在月`)才删 —— cutoff 落在某月中间时该月**保留**
+ *     (宁可多留一个月,也不误删刚过线的数据)。
+ *   · 等价于:删 `tag < cutoff 所在月` 的分区。
+ *   · **绝不删当前月**(兜底,即便 retainDays=0)。
+ *   · 非 `{YYYYMM}` 形状的(如 DEFAULT 分区)一律不碰。
+ */
+export function partitionsToDrop(tags: readonly string[], now: number, retainDays: number): string[] {
+  const cd = new Date(now - retainDays * 86_400_000);
+  const cutoffTag = stamp(cd.getUTCFullYear(), cd.getUTCMonth());
+  const nd = new Date(now);
+  const currentTag = stamp(nd.getUTCFullYear(), nd.getUTCMonth());
+  const out: string[] = [];
+  for (const tag of tags) {
+    if (!/^\d{6}$/.test(tag)) continue;
+    if (tag < cutoffTag && tag < currentTag) out.push(tag);
+  }
+  return out.sort();
+}
+
+/** `telemetry_202601` → `202601`(listPartitions 返回全名,保留逻辑只认 tag)。 */
+function tagOf(table: string, relname: string): string {
+  return relname.startsWith(`${table}_`) ? relname.slice(table.length + 1) : relname;
+}
+
+/**
+ * 应用保留策略:对 telemetry/events 各删一批过期整月分区。**不可逆**,调用方须显式开启。
+ * @returns 实际删掉的分区全名(如 `telemetry_202601`),供日志/测试断言
+ */
+export async function applyRetention(
+  pool: Pool,
+  opts: RetentionOptions = {},
+  log: (msg: string) => void = () => {},
+): Promise<string[]> {
+  const now = opts.now ?? Date.now();
+  const days: Record<(typeof PARTITIONED)[number], number> = {
+    telemetry: opts.telemetryDays ?? DEFAULT_TELEMETRY_RETAIN_DAYS,
+    events: opts.eventsDays ?? DEFAULT_EVENTS_RETAIN_DAYS,
+  };
+  const dropped: string[] = [];
+  for (const table of PARTITIONED) {
+    const tags = (await listPartitions(pool, table)).map((r) => tagOf(table, r));
+    for (const tag of partitionsToDrop(tags, now, days[table])) {
+      await dropPartition(pool, table, tag);
+      dropped.push(`${table}_${tag}`);
+      log(`删除过期分区 ${table}_${tag}(保留 ${days[table]} 天)`);
+    }
+  }
+  if (dropped.length === 0) {
+    log(`无过期分区可删(遥测 ${days.telemetry} 天 / 事件 ${days.events} 天)`);
+  }
+  return dropped;
+}

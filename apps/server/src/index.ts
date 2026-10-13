@@ -37,8 +37,20 @@ export {
   DEFAULT_GOAL_ML,
   type MemoryStoreOptions,
   type Store,
+  type DeleteScope,
+  type ForgetCounts,
 } from './store/store.ts';
 export { setDayTimeZone, getDayTimeZone } from './core/day-boundary.ts';
+export {
+  createLogger,
+  parseLogLevel,
+  parseLogFormat,
+  LOG_LEVELS,
+  type Logger,
+  type LoggerOptions,
+  type LogFields,
+  type LogLevel,
+} from './core/logger.ts';
 export {
   runChat,
   dispatch,
@@ -79,7 +91,18 @@ export {
 export { MemoryAccountsStore, FileAccountsStore } from './core/social/accounts.ts';
 // ── Postgres 存储层(第 2 阶段;pg 归窗口 B)──────────────────────
 export { createPgPool, query, queryOne, withTransaction, type Pool } from './store/pg/pool.ts';
-export { migrate, ensurePartitions, listPartitions, dropPartition } from './store/pg/migrate.ts';
+export {
+  migrate,
+  ensurePartitions,
+  listPartitions,
+  dropPartition,
+  applyRetention,
+  partitionsToDrop,
+  retainDaysFromEnv,
+  DEFAULT_TELEMETRY_RETAIN_DAYS,
+  DEFAULT_EVENTS_RETAIN_DAYS,
+  type RetentionOptions,
+} from './store/pg/migrate.ts';
 export { PgStore } from './store/pg/store.ts';
 export { PgChatStore } from './store/pg/chat.ts';
 export { PgAccountsStore } from './store/pg/accounts.ts';

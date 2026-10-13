@@ -23,6 +23,7 @@ import { UpstreamFrameSchema } from '@cup/contract';
 import type { Pipeline } from '../core/pipeline.ts';
 import type { CommandQueue } from '../core/commands.ts';
 import type { MqttTransport, MqttTransportMessage } from './mqtt-transport.ts';
+import type { LogLevel } from '../core/logger.ts';
 
 /** 上行通配订阅:一个订阅吃下所有设备。 */
 export const UPLINK_TOPIC = 'dev/+/up';
@@ -57,7 +58,7 @@ export interface MqttAdapterOptions {
   /** broker 地址,仅用于日志/诊断(连接本身归 transport 所有)。 */
   url?: string;
   /** 日志出口;默认 console。测试里可换成收集器 */
-  log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  log?: (msg: string, level?: LogLevel) => void;
   /** 覆盖上行订阅 topic;默认 UPLINK_TOPIC */
   uplinkTopic?: string;
   /** 覆盖下行 topic 生成;默认 downTopic */

@@ -121,8 +121,15 @@ CUP_PG_URL=postgres://… node apps/server/src/cli.ts   # 起服务,自动跑迁
 
 - **迁移**:手写编号 `.sql`(`store/pg/migrations/`),`migrate.ts` 用 `schema_migrations` 表逐个应用,
   每个迁移各在自己的事务里;**无 ORM**。
-- **分区**:`telemetry`/`events` 按 `ts` 月分区(`ensurePartitions(now, ahead=2)`),粗粒度保留期靠
-  **删整分区**(不逐行删)。
+- **分区 + 保留策略**:`telemetry`/`events` 按 `ts` 月分区(`ensurePartitions(now, ahead=2)`);
+  保留期靠**删整月分区**(不逐行删,十万用户下遥测约 58M 行/天,逐行删跑不动)。`applyRetention`
+  默认遥测 90 天、事件 395 天(约 13 个月),cutoff 所在月**保留**、当前月**永不删**、非 `YYYYMM`
+  形状的分区不碰。**删分区不可逆 → 绝不隐式跑**,须 `--retain` 或 `CUP_RETENTION=1`:
+  ```bash
+  node apps/server/src/cli.ts --retain             # 跑迁移 + 删过期月分区后即退(定时任务用)
+  CUP_RETENTION=1 CUP_PG_URL=… node apps/server/src/cli.ts   # 服务启动时顺带清一次
+  # CUP_TELEMETRY_RETAIN_DAYS / CUP_EVENTS_RETAIN_DAYS 可调天数
+  ```
 - **隔离纪律**:Pg 契约测试用一次性 schema(`CREATE SCHEMA c<rand>` + 连接串 `options=-c search_path=…`),
   与内存侧的 `mkdtemp` 临时目录同款。
 
@@ -139,8 +146,23 @@ refill_count / temp_range / notable_events / body_cues / turns_summary`。
 - **与 `profile()` 的关系**:并存相加。`profile()` 是**始终注入**的滚动身份;`recall` 是**按需拉取**的
   情景细节(用户提"上周""那天…"时调)。
 
-（**待落**:第 4 阶段三档删除 `DELETE /cups/:id/memory?scope=` + `DELETE /account`,硬前置是设备侧
-一次性 claim code 的可信绑定。）
+## 三档删除(「被遗忘权」面)
+
+硬删、无墓碑。三档各删**恰好**对应集合(带越权闸:会话 `user_id` 须拥有该杯,否则 403):
+
+| 端点 | scope | 删什么 | agent 忘记 |
+|---|---|---|---|
+| `DELETE /cups/:id/memory?scope=conversation` | conversation | `chat_turns` + 长期画像 | 「聊过什么」 |
+| `DELETE /cups/:id/memory?scope=memory` | memory | `memory_cards` + `cup_traits` | 「那些日子」 |
+| `DELETE /cups/:id/memory?scope=all` | all | 以上**并** telemetry/events/daily_agg/goal/最新样本 | 一切归零 |
+| `DELETE /account` | — | 账号 + 名下各杯 `all` + 会话 | 注销 |
+
+- `scope` 缺失/非法 → 400(不默认、不猜测,免得手滑删光)。两个端点**走会话闸 + 归属校验**
+  (Bearer 会话),不走设备共享的 `x-api-key` —— 后者防不了「A 登录后删 B 的杯」。
+- 多表删除收在一个事务里(`PgStore.forget` / `deleteAccount` 用 `withTransaction`),半删不可接受。
+- `MemoryStore.forget` 是同一语义的内存实现(memory 档**只**删卡,不碰遥测 —— 曾被测试咬出过此 bug)。
+- **硬前置**:`POST /social/cup` 的归属校验靠设备一次性 claim code(可信绑定,**默认开**;
+  仅 `CUP_REQUIRE_CLAIM=0|false` 显式关闭,退回"自证绑定"、仅供本地开发)。
 
 ## 目录地图
 

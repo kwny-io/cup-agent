@@ -33,6 +33,10 @@ export interface ChatStore {
   /** 上次画像蒸馏的时刻(ms);从未蒸过 → 0(distill.ts 据此判"攒够新轮没") */
   lastDistilledAt(cupId: string): Promise<number>;
   setLastDistilledAt(cupId: string, ts: number): Promise<void>;
+  /** 删该杯全部对话轮(删除第 4 阶段:`conversation` 档)。**硬删**,无墓碑。 */
+  deleteTurns(cupId: string): Promise<void>;
+  /** 删该杯长期画像 + 蒸馏水位(`conversation` 档;画像本是"聊过什么"的沉淀)。 */
+  deleteProfile(cupId: string): Promise<void>;
   /** 落盘(内存实现是 no-op);app.close() 时调 */
   flush(): Promise<void>;
 }
@@ -91,6 +95,15 @@ export class MemoryChatStore implements ChatStore {
 
   async setLastDistilledAt(cupId: string, ts: number): Promise<void> {
     this.distilledAt.set(cupId, ts);
+  }
+
+  async deleteTurns(cupId: string): Promise<void> {
+    this.turns.delete(cupId);
+  }
+
+  async deleteProfile(cupId: string): Promise<void> {
+    this.profiles.delete(cupId);
+    this.distilledAt.delete(cupId);
   }
 
   async flush(): Promise<void> {

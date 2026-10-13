@@ -15,6 +15,8 @@ export type { ProfileRecord };
 export interface ProfileStore {
   get(cupId: string): Promise<ProfileRecord | null>;
   set(cupId: string, r: ProfileRecord): Promise<void>;
+  /** 删该杯人格档案(删除第 4 阶段:`memory` 档)。**硬删**,无墓碑。 */
+  delete(cupId: string): Promise<void>;
   flush(): Promise<void>;
 }
 
@@ -27,6 +29,10 @@ export class MemoryProfileStore implements ProfileStore {
 
   async set(cupId: string, r: ProfileRecord): Promise<void> {
     this.map.set(cupId, r);
+  }
+
+  async delete(cupId: string): Promise<void> {
+    this.map.delete(cupId);
   }
 
   async flush(): Promise<void> {
@@ -47,6 +53,10 @@ export class FileProfileStore implements ProfileStore {
 
   async set(cupId: string, r: ProfileRecord): Promise<void> {
     this.file.setTraits(cupId, r);
+  }
+
+  async delete(cupId: string): Promise<void> {
+    this.file.dropTraits(cupId);
   }
 
   async flush(): Promise<void> {

@@ -116,6 +116,15 @@ export class PgChatStore implements ChatStore {
     );
   }
 
+  async deleteTurns(cupId: string): Promise<void> {
+    await query(this.pool, `DELETE FROM chat_turns WHERE cup_id = $1`, [cupId]);
+  }
+
+  async deleteProfile(cupId: string): Promise<void> {
+    // 画像与蒸馏水位在同一行 chat_profile → 整行删(对齐 memory 版一并抹 distillAt)。
+    await query(this.pool, `DELETE FROM chat_profile WHERE cup_id = $1`, [cupId]);
+  }
+
   async flush(): Promise<void> {
     // Postgres 实现无内存缓冲 → no-op
   }

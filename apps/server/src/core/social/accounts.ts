@@ -86,6 +86,22 @@ export class MemoryAccountsStore implements AccountsStore {
     }
   }
 
+  async deleteAccount(id: string): Promise<void> {
+    const a = this.accounts.get(id);
+    if (a) this.byEmail.delete(normalizeEmail(a.email));
+    this.accounts.delete(id);
+    this.subs.delete(id);
+    for (const [key, f] of [...this.friendEdges.entries()]) {
+      if (f.a_user_id === id || f.b_user_id === id) this.friendEdges.delete(key);
+    }
+  }
+
+  async dropSessionsForUser(userId: string): Promise<void> {
+    for (const [token, s] of [...this.sessions.entries()]) {
+      if (s.user_id === userId) this.sessions.delete(token);
+    }
+  }
+
   async putSession(s: Session): Promise<void> {
     this.sessions.set(s.token, s);
   }
@@ -223,6 +239,24 @@ export class FileAccountsStore implements AccountsStore {
       this.s.accounts[id] = { ...a, cup_id: cupId };
     }
     this.file.flushSoon();
+  }
+
+  async deleteAccount(id: string): Promise<void> {
+    delete this.s.accounts[id];
+    delete this.s.subscriptions[id];
+    this.s.friends = this.s.friends.filter((f) => f.a_user_id !== id && f.b_user_id !== id);
+    this.file.flushSoon();
+  }
+
+  async dropSessionsForUser(userId: string): Promise<void> {
+    let touched = false;
+    for (const [token, s] of Object.entries(this.s.sessions)) {
+      if (s.user_id === userId) {
+        delete this.s.sessions[token];
+        touched = true;
+      }
+    }
+    if (touched) this.file.flushSoon();
   }
 
   async putSession(s: Session): Promise<void> {

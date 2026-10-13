@@ -24,9 +24,10 @@
  * 不在各处理器里散落 if。
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import type { Command } from '@cup/contract';
 import { CUP } from '@cup/contract';
-import type { Store } from '../store/store.ts';
+import type { DeleteScope, Store } from '../store/store.ts';
 import type { DailyAgg } from '../core/types.ts';
 import { DEFAULT_GOAL_ML, dayKey, dayStart } from '../store/store.ts';
 import type { Pipeline } from '../core/pipeline.ts';
@@ -60,6 +61,7 @@ import {
   type PublicUser,
 } from '../core/social/types.ts';
 import { MemoryProfileStore, type ProfileStore } from '../core/traits.ts';
+import type { LogLevel } from '../core/logger.ts';
 import { computePersonality, traitRecord } from '../core/personality.ts';
 import { closeDayCard } from '../core/memory-cards.ts';
 
@@ -114,7 +116,7 @@ export interface ApiDeps {
    * 设备/模拟器两半验收后由用户开。
    */
   requireClaim?: boolean;
-  log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  log?: (msg: string, level?: LogLevel) => void;
 }
 
 export function createApiServer(deps: ApiDeps): Server {
@@ -126,17 +128,34 @@ export function createApiServer(deps: ApiDeps): Server {
     accounts: deps.accounts ?? new MemoryAccountsStore(),
     profiles: deps.profiles ?? new MemoryProfileStore(),
   };
+  const reqLog = (resolved.log ?? (() => {})) as (msg: string, level?: LogLevel) => void;
   return createServer((req, res) => {
     cors(res);
     if (req.method === 'OPTIONS') {
       res.writeHead(204).end();
       return;
     }
+    // 请求 id:贯穿日志,便于把一条请求的多行串起来(也回给客户端便于对账)。
+    const reqId = randomBytes(6).toString('hex');
+    const started = Date.now();
+    res.setHeader('x-request-id', reqId);
     // route 现在 async(Store 全 Promise 化):同步抛与异步拒绝一并在此收口。
     // headersSent 守卫:处理器可能已 send 后才抛(极罕见),避免二次写头。
-    void route(req, res, resolved).catch((err: unknown) => {
-      if (!res.headersSent) send(res, 500, { error: (err as Error).message });
-    });
+    void route(req, res, resolved)
+      .catch((err: unknown) => {
+        if (!res.headersSent) send(res, 500, { error: (err as Error).message });
+      })
+      .finally(() => {
+        // 一行/请求:方法 路径 → 状态 耗时(带 reqId,便于与客户端对账、串起该请求的多行)。
+        // 5xx 记 error,4xx 记 warn,其余 info;/healthz 是探针,高频噪声 → 降到 debug(默认级别下不打)。
+        const status = res.statusCode;
+        const path = req.url ?? '/';
+        const level: LogLevel = path === '/healthz' ? 'debug' : status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+        reqLog(
+          `${req.method ?? 'GET'} ${path} → ${status} ${Date.now() - started}ms rid=${reqId}`,
+          level,
+        );
+      });
   });
 }
 
@@ -195,6 +214,11 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
     return await socialTeamRoute(req, res, deps);
   }
 
+  // ── 注销账号(删除第 4 阶段;需登录会话)──
+  if (path === '/account') {
+    return await accountDeleteRoute(req, res, deps);
+  }
+
   const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|profile|memory|llm)$/);
   if (!m) {
     send(res, 404, { error: 'not found', path });
@@ -206,6 +230,13 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
 
   // `/llm` = 用户给"自己那只杯"配模型(BYOK)→ 走**账号会话**闸(同 /social/*),不走设备 x-api-key。
   if (action === 'llm') return await cupLlmRoute(req, res, deps, cupId);
+
+  // `DELETE /memory` = 用户删"自己那只杯"的记忆(第 4 阶段三档删除)→ 同 `/llm` 走**账号会话**闸
+  // (会话 + 归属),**不走设备 x-api-key** —— 共享的 x-api-key 不足以证明"你是这只杯的主人"。
+  // 故它不在 isWriteEndpoint 的 x-api-key 写集合里 —— 这里已用更强的会话+归属闸把它短路掉了。
+  if (action === 'memory' && (req.method ?? 'GET') === 'DELETE') {
+    return await memoryDeleteRoute(req, res, deps, cupId, url);
+  }
 
   // 写端点守卫(R10):仅在配了 key 时启用。读端点 / healthz 不受影响。
   if (!authorize(req, res, deps, method, action)) return;
@@ -891,7 +922,7 @@ const MEMORY_DAYS_DEFAULT = 7;
  *   · `?build=1` → 先按需补建那天的卡(那天有数据/对话才建),再返回
  *
  * 返回 `{ cup_id, days: MemoryCard[] }`。**只读**(build=1 会写一张卡,但仍是幂等的封存)。
- * 三档删除(第 4 阶段)会在这条路由上加 DELETE。
+ * 三档删除(第 4 阶段)见下方 `memoryDeleteRoute`(同路由的 DELETE 方法)。
  */
 async function memoryRoute(
   req: IncomingMessage,
@@ -921,6 +952,79 @@ async function memoryRoute(
   if (build) await closeDayCard(deps.store, memory, cupId, today, Date.now());
   const cards = await deps.store.recentMemoryCards(cupId, today, days);
   send(res, 200, { cup_id: cupId, days: cards });
+}
+
+/**
+ * 长期记忆(第 4 阶段)—— **三档删除**。`DELETE /cups/:id/memory?scope=…`
+ *
+ * 鉴权**强于**设备写端点:走账号会话(401)+ **归属**(非本杯主人 403),不走共享 x-api-key ——
+ * x-api-key 是设备面共享的,证明不了"你是这只杯的主人"(R18 修法的落点)。
+ *
+ * 三档(硬删、无墓碑;见计划「三档删除」):
+ *   · `conversation` → 对话轮 + 长期画像(「聊过什么」)
+ *   · `memory`       → 记忆卡 + 人格档案(「那些日子」)
+ *   · `all`          → 以上全部 + telemetry/events/daily_agg/goal/最新样本(一切都归零)
+ *
+ * scope 必填且必须合法 —— 不默认、不猜测,免得手滑删光。
+ */
+async function memoryDeleteRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+  url: URL,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
+  if (!me) return;
+  if (!(await guardCupOwner(res, deps, cupId, me.user_id))) return;
+
+  const raw = url.searchParams.get('scope') ?? '';
+  if (raw !== 'conversation' && raw !== 'memory' && raw !== 'all') {
+    return send(res, 400, { error: 'scope 需为 conversation / memory / all' });
+  }
+  const scope: DeleteScope = raw;
+
+  // Store 域:conversation 档在 Store 名下无事(no-op);memory 只删卡;all 全删。
+  const counts = await deps.store.forget(cupId, scope);
+  const done = { conversation: false, memory: false, traits: false };
+  if (scope === 'conversation' || scope === 'all') {
+    await deps.chatMemory?.deleteTurns(cupId);
+    await deps.chatMemory?.deleteProfile(cupId);
+    done.conversation = true;
+  }
+  if (scope === 'memory' || scope === 'all') {
+    await deps.profiles?.delete(cupId);
+    done.traits = true;
+  }
+  send(res, 200, { cup_id: cupId, scope, deleted: { ...done, counts } });
+}
+
+/**
+ * 账号注销(第 4 阶段)—— `DELETE /account`。需登录会话。
+ *   · 先抹掉该账号**名下那只杯**的全部数据(等价 `scope=all`),再删账号 + 会话。
+ *   · 硬删,无墓碑(GDPR「被遗忘权」面);账号未绑杯 → 只删账号本身。
+ * 杯子的原始遥测另有**保留期**约束(分区策略),与此处的账号级删除是两条独立线。
+ */
+async function accountDeleteRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<void> {
+  if ((req.method ?? 'GET') !== 'DELETE') return send(res, 405, { error: 'use DELETE' });
+  const me = await guardUser(req, res, deps);
+  if (!me) return;
+
+  const acct = await deps.accounts!.accountById(me.user_id);
+  const cupId = acct?.cup_id ?? null;
+  if (cupId) {
+    await deps.store.forget(cupId, 'all');
+    await deps.chatMemory?.deleteTurns(cupId);
+    await deps.chatMemory?.deleteProfile(cupId);
+    await deps.profiles?.delete(cupId);
+  }
+  await deps.accounts!.deleteAccount(me.user_id); // 账号 + 订阅 + 好友边
+  await deps.accounts!.dropSessionsForUser(me.user_id); // 旧令牌立即失效
+  send(res, 200, { user_id: me.user_id, cup_id: cupId, deleted: true });
 }
 
 /** 由当下日聚合现算派生性格快照(与战报/性格史同一口径) */

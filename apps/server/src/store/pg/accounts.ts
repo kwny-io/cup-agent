@@ -9,7 +9,7 @@
  */
 import type { Account, AccountsStore, CupClaim, PackStatus, PersonaPack, Session } from '../../core/social/types.ts';
 import { normalizeEmail } from '../../core/social/types.ts';
-import { query, queryOne, type Pool } from './pool.ts';
+import { query, queryOne, withTransaction, type Pool } from './pool.ts';
 
 interface UserRow {
   user_id: string;
@@ -143,6 +143,20 @@ export class PgAccountsStore implements AccountsStore {
 
   async setCup(id: string, cupId: string | null): Promise<void> {
     await query(this.pool, `UPDATE users SET cup_id = $2 WHERE user_id = $1`, [id, cupId]);
+  }
+
+  async deleteAccount(id: string): Promise<void> {
+    // 订阅/好友表没有 users 外键(见 0001:只有 sessions 有 ON DELETE CASCADE)→ 显式清。
+    // 全部收在一个事务里:账号删了但好友边留着 = 悬垂数据(好友列表会指向不存在的 user)。
+    await withTransaction(this.pool, async (client) => {
+      await client.query(`DELETE FROM subscriptions WHERE user_id = $1`, [id]);
+      await client.query(`DELETE FROM friends WHERE a_user_id = $1 OR b_user_id = $1`, [id]);
+      await client.query(`DELETE FROM users WHERE user_id = $1`, [id]);
+    });
+  }
+
+  async dropSessionsForUser(userId: string): Promise<void> {
+    await query(this.pool, `DELETE FROM sessions WHERE user_id = $1`, [userId]);
   }
 
   // ── 会话 ───────────────────────────────────────────────────────

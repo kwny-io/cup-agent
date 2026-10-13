@@ -10,6 +10,7 @@
  *
  * strip-only 约束:无 enum、无参数属性,全部显式字段。
  */
+import type { LogLevel } from '../logger.ts';
 
 /** 给模型看的工具说明(转成各家 API 的 tools 形状) */
 export interface ToolSpec {
@@ -68,4 +69,4 @@ export interface ChatAnswer {
   turns: number;
 }
 
-export type LogFn = (msg: string, level?: 'info' | 'warn' | 'error') => void;
+export type LogFn = (msg: string, level?: LogLevel) => void;

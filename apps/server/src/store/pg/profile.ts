@@ -38,6 +38,10 @@ export class PgProfileStore implements ProfileStore {
     );
   }
 
+  async delete(cupId: string): Promise<void> {
+    await query(this.pool, `DELETE FROM cup_traits WHERE cup_id = $1`, [cupId]);
+  }
+
   async flush(): Promise<void> {
     // Postgres 实现无内存缓冲 → no-op
   }

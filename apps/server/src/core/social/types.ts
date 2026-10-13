@@ -114,6 +114,14 @@ export interface AccountsStore {
   setDisabled(id: string, v: boolean): Promise<void>;
   /** 绑定 / 解绑用户的杯子(#74 好友互见的口子);cupId 为 null = 解绑 */
   setCup(id: string, cupId: string | null): Promise<void>;
+  /**
+   * 删账号及其名下社交数据(删除第 4 阶段:账号级「注销」)。**硬删**,无墓碑。
+   * 连带清掉该用户的订阅与好友边(它们引用 userId,留着就是悬垂数据)。
+   * 杯子数据(遥测/记忆/画像)不在此 —— 那是**杯级** `DELETE /cups/:id/memory`,由路由逐杯调。
+   */
+  deleteAccount(id: string): Promise<void>;
+  /** 删该用户全部会话令牌(注销时一并 — 否则旧令牌在过期前仍可 resolve)。 */
+  dropSessionsForUser(userId: string): Promise<void>;
 
   // ── 会话 ──
   putSession(s: Session): Promise<void>;

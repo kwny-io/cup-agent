@@ -22,7 +22,7 @@ import { PgAccountsStore } from '../src/store/pg/accounts.ts';
 import { PgProfileStore } from '../src/store/pg/profile.ts';
 import { PgCupLlmStore } from '../src/store/pg/cup-llm.ts';
 import { createPgPool, type Pool } from '../src/store/pg/pool.ts';
-import { migrate } from '../src/store/pg/migrate.ts';
+import { migrate, applyRetention, listPartitions } from '../src/store/pg/migrate.ts';
 
 const CUP = 'cup-CONTRACT';
 
@@ -406,6 +406,92 @@ if (!PG_URL) {
     await llm.delete(CUP);
     assert.equal(await llm.get(CUP), null);
     await llm.delete(CUP); // 二次删 no-op
+  });
+
+  // 三档删除（第 4 阶段）—— Pg 实现与 memory 同语义：conversation 本店 no-op、
+  // memory 只删卡、all 全抹。**关键**：memory 档绝不能顺手删遥测/事件/聚合（曾被 bug 咬过）。
+  test('[Pg] PgStore.forget：conversation no-op / memory 只删卡 / all 全抹', async () => {
+    await pool.query(`TRUNCATE ${TABLES} RESTART IDENTITY CASCADE`);
+    const s = new PgStore(pool);
+    const d = dayKey(Date.now());
+    const now = Date.now();
+    await s.applyEventToAgg(ev({ type: 'drink', amount_ml: 300 }));
+    await s.appendTelemetry({ cup_id: CUP, device_id: 'lid-CONTRACT', kind: 'base', ts: now, seq: 1 });
+    await s.appendEvent(ev({ type: 'drink', amount_ml: 300 }));
+    await s.setGoal(CUP, 1800);
+    await s.setLatestSample({
+      cup_id: CUP, ts: now, volume_ml: 300, level_pct: 40, temp_c: 25,
+      confidence: 1, derived_by: 'base', present: true, stable: true,
+    });
+    await s.putMemoryCard({
+      cup_id: CUP, date: d, built_at: now,
+      details: {
+        drank_ml: 300, goal_ml: 1800, reached: false, streak: 1, refill_count: 0,
+        temp_range: null, notable_events: [], body_cues: [], turns_summary: null, turn_count: 0,
+      },
+    });
+
+    // conversation → 本 Store 名下无物，no-op（那些在 ChatStore）
+    const c = await s.forget(CUP, 'conversation');
+    assert.deepEqual(c, { telemetry: 0, events: 0, daily_agg: 0, goal: 0, latest: 0, memory_cards: 0 });
+    assert.equal((await s.telemetry(CUP, 0, now + 1000)).length, 1, 'conversation 不动遥测');
+    assert.ok(await s.memoryCard(CUP, d), 'conversation 不动卡');
+
+    // memory → **只**删卡；遥测/事件/聚合/目标不碰
+    const m = await s.forget(CUP, 'memory');
+    assert.equal(m.memory_cards, 1);
+    assert.equal(m.telemetry, 0, 'memory 档不该报遥测删除数');
+    assert.equal(await s.memoryCard(CUP, d), null, 'memory 删卡');
+    assert.equal((await s.telemetry(CUP, 0, now + 1000)).length, 1, 'memory 保留遥测');
+    assert.equal((await s.events(CUP, 0, now + 1000)).length, 1, 'memory 保留事件');
+    assert.ok(await s.agg(CUP, d), 'memory 保留日聚');
+    assert.equal(await s.goal(CUP), 1800, 'memory 保留目标');
+
+    // all → 全抹
+    const a = await s.forget(CUP, 'all');
+    assert.equal(a.telemetry, 1);
+    assert.equal(a.events, 1);
+    assert.equal(a.daily_agg, 1);
+    assert.equal(a.goal, 1);
+    assert.equal(a.latest, 1);
+    assert.equal((await s.telemetry(CUP, 0, now + 1000)).length, 0);
+    assert.equal((await s.events(CUP, 0, now + 1000)).length, 0);
+    assert.equal(await s.agg(CUP, d), null);
+    assert.equal(await s.latestSample(CUP), null);
+  });
+
+  // 保留策略（第 5 阶段）—— 造两个远期过去的月分区，断言 applyRetention 只删它们、
+  // 保留当前月（当前月由 migrate 的 ensurePartitions 建）。
+  test('[Pg] applyRetention：删过期整月分区、留当前月', async () => {
+    const OLD = [
+      [2025, 0], [2025, 1], // 2025-01 / 2025-02
+    ] as const;
+    for (const [y, m0] of OLD) {
+      const from = Date.UTC(y, m0, 1);
+      const to = Date.UTC(y, m0 + 1, 1);
+      const tag = `${y}${String(m0 + 1).padStart(2, '0')}`;
+      for (const t of ['telemetry', 'events']) {
+        await pool.query(
+          `CREATE TABLE IF NOT EXISTS ${t}_${tag} PARTITION OF ${t} FOR VALUES FROM (${from}) TO (${to})`,
+        );
+      }
+    }
+    const before = await listPartitions(pool, 'telemetry');
+    assert.ok(before.includes('telemetry_202501') && before.includes('telemetry_202502'), '老分区已建');
+
+    const dropped = await applyRetention(pool, { telemetryDays: 90, eventsDays: 395, now: Date.now() });
+
+    // 老分区全删（遥测 + 事件各两个）
+    for (const tag of ['202501', '202502']) {
+      assert.ok(dropped.includes(`telemetry_${tag}`), `telemetry_${tag} 应被删`);
+      assert.ok(dropped.includes(`events_${tag}`), `events_${tag} 应被删`);
+    }
+    const after = await listPartitions(pool, 'telemetry');
+    assert.ok(!after.includes('telemetry_202501') && !after.includes('telemetry_202502'), '老分区已消失');
+    // 当前月分区仍在（绝不删当前月）
+    const cur = new Date();
+    const curTag = `${cur.getUTCFullYear()}${String(cur.getUTCMonth() + 1).padStart(2, '0')}`;
+    assert.ok(after.includes(`telemetry_${curTag}`), `当前月分区 telemetry_${curTag} 应保留`);
   });
 
   test('[Pg] teardown：DROP SCHEMA CASCADE', async () => {

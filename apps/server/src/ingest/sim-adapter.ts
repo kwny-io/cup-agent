@@ -14,12 +14,13 @@
 import { WebSocket } from 'ws';
 import { UpstreamFrameSchema } from '@cup/contract';
 import type { Pipeline } from '../core/pipeline.ts';
+import type { LogLevel } from '../core/logger.ts';
 
 export interface SimAdapterOptions {
   url: string;
   pipeline: Pipeline;
   /** 日志出口;默认 console。测试里可换成收集器 */
-  log?: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  log?: (msg: string, level?: LogLevel) => void;
   /**
    * 收到 hello 握手帧时回调(可信绑定用,见 core/social/claim.ts)。
    * WS 出口**没有 topic**,故 deviceId 只能取自 hello 自报的 `device_id` 字段(模拟器为本地开发路径,

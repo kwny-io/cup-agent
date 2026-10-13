@@ -144,6 +144,25 @@ export class FilePersistence {
     this.schedule();
   }
 
+  /** 删某杯全部对话轮(删除第 4 阶段:conversation 档)。 */
+  dropTurns(cupId: string): void {
+    delete this.state.turns[cupId];
+    this.schedule();
+  }
+
+  /** 删某杯长期画像 + 蒸馏水位(conversation 档;两者同生共死)。 */
+  dropProfile(cupId: string): void {
+    delete this.state.profiles[cupId];
+    delete this.state.distilledAt[cupId];
+    this.schedule();
+  }
+
+  /** 删某杯人格档案(删除第 4 阶段:memory 档)。 */
+  dropTraits(cupId: string): void {
+    delete this.state.traits[cupId];
+    this.schedule();
+  }
+
   /** 攒一会儿再落盘 */
   private schedule(): void {
     this.dirty = true;

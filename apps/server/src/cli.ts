@@ -21,7 +21,15 @@ import { NullChatLlm } from './core/chat/mock.ts';
 import type { ChatLlm } from './core/chat/types.ts';
 import { setDayTimeZone, getDayTimeZone } from './core/day-boundary.ts';
 import { createPgPool } from './store/pg/pool.ts';
-import { migrate } from './store/pg/migrate.ts';
+import {
+  migrate,
+  applyRetention,
+  retainDaysFromEnv,
+  DEFAULT_TELEMETRY_RETAIN_DAYS,
+  DEFAULT_EVENTS_RETAIN_DAYS,
+  type RetentionOptions,
+} from './store/pg/migrate.ts';
+import { createLogger, parseLogLevel, parseLogFormat, type LogLevel } from './core/logger.ts';
 
 interface Args {
   port: number;
@@ -34,12 +42,16 @@ interface Args {
   allowUnauth: boolean;
   /** --read-auth:读端点也要 x-api-key(可选层,默认读开放) */
   readAuth: boolean;
-  /** --require-claim:绑定杯子须出示设备一次性 claim code(可信绑定;默认关) */
+  /** --require-claim:绑定杯子须出示设备一次性 claim code(可信绑定;**默认开**,CUP_REQUIRE_CLAIM=0|false 关) */
   requireClaim: boolean;
   /** 画像蒸馏阈值(自上次蒸馏后新增多少轮才再蒸);null = 用 distill.ts 默认值 */
   profileMinTurns: number | null;
   /** 日界时区(IANA,如 Asia/Shanghai);null = 服务器本地时区 */
   tz: string | null;
+  /** 日志最低级别(debug/info/warn/error);--log-level / CUP_LOG_LEVEL */
+  logLevel: LogLevel;
+  /** 日志格式:text(默认) / json;--log-format / CUP_LOG_FORMAT */
+  logFormat: 'text' | 'json';
 }
 
 function parseArgs(argv: string[]): Args {
@@ -52,9 +64,12 @@ function parseArgs(argv: string[]): Args {
     cups: [],
     allowUnauth: false,
     readAuth: false,
-    requireClaim: process.env.CUP_REQUIRE_CLAIM === '1' || process.env.CUP_REQUIRE_CLAIM === 'true',
+    // 可信绑定默认开(绑定须出示设备一次性码);仅显式 `CUP_REQUIRE_CLAIM=0/false` 才关。
+    requireClaim: !(process.env.CUP_REQUIRE_CLAIM === '0' || process.env.CUP_REQUIRE_CLAIM === 'false'),
     profileMinTurns: null,
     tz: process.env.CUP_TZ ?? null,
+    logLevel: parseLogLevel(process.env.CUP_LOG_LEVEL),
+    logFormat: parseLogFormat(process.env.CUP_LOG_FORMAT),
   };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -101,6 +116,14 @@ function parseArgs(argv: string[]): Args {
         a.tz = v ?? null;
         i++;
         break;
+      case '--log-level':
+        a.logLevel = parseLogLevel(v, a.logLevel);
+        i++;
+        break;
+      case '--log-format':
+        a.logFormat = parseLogFormat(v);
+        i++;
+        break;
       case '--help':
         console.log(
           'node apps/server/src/cli.ts [--port 8788] [--sim ws://localhost:8787] [--mqtt mqtt://localhost:1883] [--quiet] [--proactive --cup cup-A1B2C3] [--profile-min-turns 8] [--allow-unauth] [--tz Asia/Shanghai]',
@@ -130,7 +153,8 @@ function parseArgs(argv: string[]): Args {
         console.log('  CUP_ADMIN_EMAIL=<邮箱>  该邮箱注册即得管理员(市场审核后台);不设则无管理员。');
         console.log('');
         console.log('可信绑定(风险 R18;绑定杯子须出示设备一次性 claim code):');
-        console.log('  --require-claim / CUP_REQUIRE_CLAIM=1  开启(默认关 → 绑定行为与从前一致)。');
+        console.log('  --require-claim / CUP_REQUIRE_CLAIM=1  开启(**默认已开**)。');
+        console.log('  CUP_REQUIRE_CLAIM=0|false  显式关闭(退回"自证绑定",仅本地开发);生产勿关。');
         console.log('  CUP_CLAIM_PEPPER=<base64>  码哈希的 pepper;不设则由 dataDir/claim-pepper 落盘。');
         console.log('');
         console.log('每杯模型配置(BYOK:登录后给自己那只杯配模型 + 填自己的 key):');
@@ -151,6 +175,19 @@ function parseArgs(argv: string[]): Args {
         console.log('画像蒸馏(把攒下的对话轮归纳成长期画像;随 --proactive 巡检触发):');
         console.log('  --profile-min-turns <n>  自上次蒸馏后新增多少轮才再蒸一次(默认 8)。');
         console.log('  不配对话模型(CUP_CHAT_KEY)时阈值不可达 → 自然休眠,不白跑也不写空。');
+        console.log('');
+        console.log('日志:');
+        console.log('  --log-level <debug|info|warn|error>  最低级别(默认 info);或 CUP_LOG_LEVEL。');
+        console.log('  --log-format <text|json>             输出格式(默认 text);或 CUP_LOG_FORMAT=json。');
+        console.log('');
+        console.log('Postgres 存储 / 保留策略(第 5 阶段;仅在 CUP_PG_URL 存在时):');
+        console.log('  CUP_PG_URL=postgres://…  选了它才走 PG(启动前自动迁移);不设 → 内存/文件。');
+        console.log('  --migrate               跑完迁移即退(部署用)。');
+        console.log('  --retain                跑完迁移 + 删过期月分区即退(**不可逆**,定时任务用)。');
+        console.log('  CUP_RETENTION=1         服务启动时顺带清一次过期分区。');
+        console.log('  CUP_TELEMETRY_RETAIN_DAYS=<n>  遥测保留天数(默认 90)。');
+        console.log('  CUP_EVENTS_RETAIN_DAYS=<n>     事件保留天数(默认 395,约 13 个月)。');
+        console.log('  保留策略按**整月分区**删(不逐行删);cutoff 所在月保留、当前月永不删。');
         process.exit(0);
     }
   }
@@ -166,6 +203,14 @@ function makeLlm(): Llm {
   return new FetchLlm({ url, apiKey: key, model });
 }
 
+/** 保留期(第 5 阶段):从环境变量读天数,缺省用默认。**删整分区不可逆 → 须显式开启**。 */
+function retentionOptions(): RetentionOptions {
+  return {
+    telemetryDays: retainDaysFromEnv('CUP_TELEMETRY_RETAIN_DAYS', DEFAULT_TELEMETRY_RETAIN_DAYS),
+    eventsDays: retainDaysFromEnv('CUP_EVENTS_RETAIN_DAYS', DEFAULT_EVENTS_RETAIN_DAYS),
+  };
+}
+
 /** 对话 agent 的模型;缺 KEY → NullChatLlm(聊天仍出确定性模板句,不空白) */
 function makeChatLlm(): ChatLlm {
   const key = process.env.CUP_CHAT_KEY;
@@ -177,9 +222,11 @@ function makeChatLlm(): ChatLlm {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  // 结构化日志:--quiet 直接静音(级别拉到 error 之上不可行,故用 sink 丢弃);否则按
+  // --log-level/--log-format 打。级别/格式也透传给 createApp,让内部默认 logger 一致。
   const log = args.quiet
     ? () => {}
-    : (m: string, l: 'info' | 'warn' | 'error' = 'info') => console[l](m);
+    : createLogger({ level: args.logLevel, format: args.logFormat });
 
   // 日界时区:启动时设一次(非法名早失败,别等运行到半夜才炸)
   if (args.tz !== null) {
@@ -216,12 +263,43 @@ async function main(): Promise<void> {
     }
   }
 
+  // --retain:跑完迁移 + 保留策略(删过期月分区)即退(CI / 定时任务用)。
+  // **删整分区不可逆** → 只在此处与 CUP_RETENTION=1 启动时执行,绝不隐式跑。
+  if (process.argv.includes('--retain')) {
+    if (!pgUrl) {
+      console.error('[fatal] --retain 需要 CUP_PG_URL(未设 → 无库可清)');
+      process.exit(2);
+    }
+    const pool = createPgPool(pgUrl);
+    try {
+      await migrate(pool); // 分区得先存在才谈得上删
+      const opt = retentionOptions();
+      const dropped = await applyRetention(pool, opt, (m) => console.log(m));
+      console.log(
+        dropped.length
+          ? `保留策略完成:删除 ${dropped.length} 个过期分区(${dropped.join(', ')})`
+          : '保留策略完成:无过期分区',
+      );
+      await pool.end();
+      process.exit(0);
+    } catch (err) {
+      console.error(`[fatal] 保留策略失败:${(err as Error).message}`);
+      await pool.end();
+      process.exit(2);
+    }
+  }
+
   // 选了 Postgres:启动前先跑迁移(失败即带清晰 fatal 中止,别起一个半死不活的服务)
   if (pgUrl) {
     const pool = createPgPool(pgUrl);
     try {
       const ran = await migrate(pool);
       if (ran.length) log(`已跑迁移:${ran.join(', ')}`);
+      // CUP_RETENTION=1:启动时顺带清一次过期分区(定时的便捷替代;不设则只在 --retain 时跑)
+      if (process.env.CUP_RETENTION === '1' || process.env.CUP_RETENTION === 'true') {
+        const dropped = await applyRetention(pool, retentionOptions(), log);
+        if (dropped.length) log(`保留策略:删除过期分区 ${dropped.join(', ')}`);
+      }
     } catch (err) {
       console.error(`[fatal] 迁移失败:${(err as Error).message}`);
       await pool.end();
@@ -235,6 +313,8 @@ async function main(): Promise<void> {
     mqttUrl: args.mqttUrl ?? undefined,
     mqttClientId: process.env.CUP_MQTT_CLIENT_ID,
     log,
+    logLevel: args.logLevel,
+    logFormat: args.logFormat,
     llm,
     chatLlm,
     dataDir,
@@ -280,7 +360,14 @@ async function main(): Promise<void> {
   console.log(
     `  主动开口: ${args.proactive ? `开(照看 ${args.cups.join(', ') || '无 —— 加 --cup <id>'})` : '关(--proactive 开启)'}`,
   );
-  console.log(`  可信绑定: ${args.requireClaim ? '开(绑定须设备一次性 claim code)' : '关(--require-claim / CUP_REQUIRE_CLAIM=1 开启)'}`);
+  console.log(`  可信绑定: ${args.requireClaim ? '开(默认;绑定须设备一次性 claim code)' : '关(CUP_REQUIRE_CLAIM=0|false 显式关闭,仅本地开发)'}`);
+  if (pgUrl) {
+    const opt = retentionOptions();
+    const onBoot = process.env.CUP_RETENTION === '1' || process.env.CUP_RETENTION === 'true';
+    console.log(
+      `  保留策略: 遥测 ${opt.telemetryDays} 天 / 事件 ${opt.eventsDays} 天(${onBoot ? '启动时清;' : ''}--retain 可手动清过期月分区)`,
+    );
+  }
   console.log(
     `  画像蒸馏: ${args.proactive ? `随主动开口巡检(${args.profileMinTurns ?? '默认'} 新轮起蒸)` : '关(随 --proactive 开启)'}`,
   );
