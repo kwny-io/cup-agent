@@ -9,6 +9,7 @@
 #   led_pattern.c    remind 灯效决策(纯 C,零 IDF)
 #   led_driver.c     板载 LED 驱动(LEDC/PWM 薄壳)
 #   ota_manifest.c   ota manifest 解析与校验(纯 C,零 IDF;下载/分区归 IDF 半、待真板)
+#   celebr.c         成长庆祝(纯 C,零 IDF):remind(reason=milestone)→ 庆祝表情/灯效
 #   eye_state.c      硬件脸眼睛状态机(十二态,纯 C,零 IDF;双形体人格的硬件半边)
 #   eye_render.c     硬件脸点阵渲染(128×128 单色 + 1bpp 打包,纯 C,零 IDF)
 #   claim_code.c     设备一次性 claim code:生成/规范化/校验(纯 C,零 IDF;可信绑定设备端半)
@@ -31,6 +32,7 @@ idf_component_register(
         "led_pattern.c"
         "led_driver.c"
         "ota_manifest.c"
+        "celebr.c"
         "eye_state.c"
         "eye_render.c"
         "claim_code.c"

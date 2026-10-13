@@ -205,6 +205,74 @@ static void test_priority(void) {
     ok(o.motion == MOTION_LIFTED, "平稳拿起 → 判 lifted");
 }
 
+// 造一帧带接触压力的静止输入(press_g 决定是否接触)。
+static lid_logic_in_t pressed(float press_g) {
+    lid_logic_in_t in = still(25.0f, 80);
+    in.press_g = press_g;
+    return in;
+}
+
+static void test_gesture(void) {
+    printf("[手势 压力接触时长 → tap/long_press]\n");
+    lid_logic_t st; lid_logic_init(&st);
+
+    // 短暂轻磕(~120ms)→ tap,松手时发一次
+    lid_logic_in_t down = pressed(200.0f);   // 接触中
+    lid_logic_in_t up = pressed(0.0f);       // 松手
+    lid_logic_out_t o = lid_logic_step(&st, &down, 1000);   // 上升沿:接触开始
+    ok(o.emit_gesture == 0, "接触开始时不发事件(要等松手知时长)");
+    o = lid_logic_step(&st, &up, 1120);                     // 松手,时长 120ms
+    ok(o.emit_gesture == 1, "松手发一次手势事件");
+    ok(o.gesture_type == EVENT_TAP, "120ms → tap");
+    ok(o.gesture_duration_ms == 120, "带真实接触时长 120ms");
+
+    // 长按(~900ms)→ long_press
+    lid_logic_init(&st);
+    lid_logic_step(&st, &down, 2000);
+    o = lid_logic_step(&st, &up, 2900);
+    ok(o.emit_gesture == 1, "长按松手发事件");
+    ok(o.gesture_type == EVENT_LONG_PRESS, "900ms → long_press");
+    ok(o.gesture_duration_ms == 900, "时长为 900ms");
+
+    // 阈值边界:恰好 600ms → long_press(≥);599ms → tap
+    lid_logic_init(&st);
+    lid_logic_step(&st, &down, 5000);
+    o = lid_logic_step(&st, &up, 5600);
+    ok(o.gesture_type == EVENT_LONG_PRESS, "600ms 整 → long_press(≥ 阈)");
+    lid_logic_init(&st);
+    lid_logic_step(&st, &down, 6000);
+    o = lid_logic_step(&st, &up, 6599);
+    ok(o.gesture_type == EVENT_TAP, "599ms → tap(< 阈)");
+
+    // 过短接触(抖动,<40ms)→ 不产生事件
+    lid_logic_init(&st);
+    lid_logic_step(&st, &down, 7000);
+    o = lid_logic_step(&st, &up, 7010);
+    ok(o.emit_gesture == 0, "10ms 抖动 → 丢弃,不发事件");
+
+    // 一次接触恰好一个事件:松手后持续无接触不再发
+    lid_logic_init(&st);
+    lid_logic_step(&st, &down, 8000);
+    o = lid_logic_step(&st, &up, 8150);
+    ok(o.emit_gesture == 1, "松手发一次");
+    ok(lid_logic_step(&st, &up, 8300).emit_gesture == 0, "持续无接触不重复发");
+
+    // 反复轻磕:每段接触各发一次(不粘连)
+    lid_logic_init(&st);
+    int taps = 0;
+    for (int i = 0; i < 3; i++) {
+        uint32_t base = (uint32_t)(10000 + i * 1000);
+        lid_logic_step(&st, &down, base);
+        taps += lid_logic_step(&st, &up, base + 150).emit_gesture;
+    }
+    ok(taps == 3, "三次独立轻磕 → 三次事件");
+
+    // 全程无压力传感器(press_g 恒 0)→ 永不胜出手势
+    lid_logic_init(&st);
+    int never = 0;
+    for (int i = 0; i < 50; i++) never += lid_logic_step(&st, &up, (uint32_t)(i * 20)).emit_gesture;
+    ok(never == 0, "无压力信号 → 绝不发手势(未接传感器不误报)");
+}
 
 int main(void) {
     printf("== lid_logic 宿主单测 ==\n");
@@ -215,6 +283,7 @@ int main(void) {
     test_battery_hysteresis();
     test_lifted();
     test_priority();
+    test_gesture();
     printf("\n== %d/%d 通过,%d 失败 ==\n", g_total - g_fail, g_total, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

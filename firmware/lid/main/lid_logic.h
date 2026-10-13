@@ -33,6 +33,9 @@ typedef struct {
     bool low_batt_alerted;    // 低电量滞回锁存
     bool lifting;             // 当前加速度模长是否持续偏低(判 lifted 的去抖)
     uint32_t lift_since_ms;   // 本次低模长起始时刻
+    // 手势(盖内压力传感器):接触时长 → tap/long_press(创意备忘 §5.1 #1)
+    bool press_contact;       // 当前是否接触(压力超 GESTURE_PRESS_MIN_G)
+    uint32_t press_since_ms;  // 本次接触起始时刻
 } lid_logic_t;
 
 /** 本帧输入(从传感器读到的原始量)。 */
@@ -41,6 +44,7 @@ typedef struct {
     float ax, ay, az;   // 加速度(g),用于 shake 能量
     float tilt_deg;     // 倾角
     int battery_pct;
+    float press_g;      // 盖顶压力(g);0 = 无接触。判定 tap/long_press 用
 } lid_logic_in_t;
 
 /** 本帧输出:合成的 motion 状态 + 本帧要不要各发一个事件。 */
@@ -50,6 +54,11 @@ typedef struct {
     bool emit_tilt_alert;   // 倾倒持续够久
     bool emit_temp_alert;   // 温度越界(带滞回)
     bool emit_low_battery;  // 电量过低(带滞回)
+    // 手势:本帧是否发一次 tap/long_press(**松手时**发,故一次接触恰好一个事件)
+    // 类型与时长一并给出 —— 契约要求 duration_ms 必须且仅在 tap/long_press 时携带。
+    bool emit_gesture;
+    event_type_t gesture_type;  // EVENT_TAP / EVENT_LONG_PRESS
+    int gesture_duration_ms;    // 本次接触时长(ms),≥0
 } lid_logic_out_t;
 
 void lid_logic_init(lid_logic_t *st);

@@ -32,7 +32,17 @@ export interface LidWorldState {
   tiltDir: number;
   lidBatteryPct: number;
   lidCharging: boolean;
+  /** 盖顶压力(g);0 = 无接触。手势信号源 */
+  pressG: number;
 }
+
+// ── 手势阈值(压力接触时长 → tap/long_press)─────────────────────────
+// **不是契约常量**:契约只装结论(事件型 tap/long_press + 必须带 duration_ms),
+// "多长算轻磕、多长算长按"归设备端。此四值镜像固件 contract_dev.h 的 GESTURE_* 宏,
+// 两侧同源;跨语言守护见 firmware/host_test/contract-mirror.test.ts。
+const GESTURE_PRESS_MIN_G = 50; // 压力超此 → 视为接触
+const GESTURE_TAP_MIN_MS = 40; // 短于此视为抖动/噪声,忽略
+const GESTURE_LONG_PRESS_MS = 600; // 达此 → long_press;介于两者 → tap
 
 export class LidSensor {
   readonly deviceId: string;
@@ -45,6 +55,9 @@ export class LidSensor {
   private lastShakeMs = -Infinity;
   private shaking = false;
   private tiltSinceMs: number | null = null;
+  // 手势状态机(镜像固件 lid_logic):接触上升沿记时,松手时按时长分类。
+  private pressContact = false;
+  private pressSinceMs = 0;
 
   constructor(opts: { deviceId: string; cupId: string; rng: () => number }) {
     this.deviceId = opts.deviceId;
@@ -104,6 +117,24 @@ export class LidSensor {
       events.push(this.event(nowMs, 'low_battery', { confidence: 1 }));
     }
     if (w.lidBatteryPct > ALERT.battery_low_pct + 5) this.lowBattAlerted = false;
+
+    // 手势(盖内压力传感器):松手时按接触时长分 tap/long_press。
+    // 与固件 lid_logic 同构 —— 接触上升沿记时,下降沿(松手)按时长发一次事件;
+    // 接触时长只有到松手才知道,故不在"够久即发"而在"松手发",一次接触恰好一个事件。
+    const contact = w.pressG >= GESTURE_PRESS_MIN_G;
+    if (contact) {
+      if (!this.pressContact) {
+        this.pressContact = true;
+        this.pressSinceMs = nowMs;
+      }
+    } else if (this.pressContact) {
+      this.pressContact = false;
+      const dur = Math.round(nowMs - this.pressSinceMs);
+      if (dur >= GESTURE_TAP_MIN_MS) {
+        const type = dur >= GESTURE_LONG_PRESS_MS ? 'long_press' : 'tap';
+        events.push(this.event(nowMs, type, { duration_ms: dur, confidence: 0.9 }));
+      }
+    }
 
     return events;
   }
@@ -186,7 +217,7 @@ export class LidSensor {
   private event(
     ts: number,
     type: CupEvent['type'],
-    extra: Partial<Pick<CupEvent, 'amount_ml' | 'temp_c' | 'confidence'>>,
+    extra: Partial<Pick<CupEvent, 'amount_ml' | 'temp_c' | 'duration_ms' | 'confidence'>>,
   ): CupEvent {
     return {
       v: 1,
@@ -198,6 +229,7 @@ export class LidSensor {
       derived_by: 'lid',
       ...(extra.amount_ml !== undefined ? { amount_ml: extra.amount_ml } : {}),
       ...(extra.temp_c !== undefined ? { temp_c: extra.temp_c } : {}),
+      ...(extra.duration_ms !== undefined ? { duration_ms: extra.duration_ms } : {}),
     };
   }
 

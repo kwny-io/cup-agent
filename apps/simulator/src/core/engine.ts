@@ -63,6 +63,8 @@ export interface EngineContext {
 }
 
 /** 紧急事件:即时上报,不攒批(安全相关,见原则 P3) */
+// 手势(tap/long_press)不在此列:是"用户轻磕确认",非安全事件,随下次上报捎带即可
+// (与真固件攒批语义一致;固件侧同样不把它当即时/紧急)。
 const URGENT_EVENTS = new Set(['temp_alert', 'tilt_alert', 'low_battery']);
 
 const DEFAULT_CONFIG: SimConfig = {
@@ -182,6 +184,7 @@ export class Engine {
         tiltDir: snap.tiltDir,
         lidBatteryPct: snap.lidBatteryPct,
         lidCharging: snap.lidCharging,
+        pressG: snap.pressG,
       },
       toMs,
     );
@@ -290,6 +293,7 @@ export class Engine {
       tiltDir: snap.tiltDir,
       lidBatteryPct: snap.lidBatteryPct,
       lidCharging: snap.lidCharging,
+      pressG: snap.pressG,
     };
 
     const lidT = this.lid.sample(w, nowMs, this.config.reportMs);
@@ -399,6 +403,21 @@ export function shakeStep(atMs: number, durationMs: number): ScriptStep {
     ctx.scheduler.at(ctx.clock.nowMs + durationMs + 1000, () => {
       ctx.world.setOnBase(true);
     }, '放回底座');
+  });
+}
+
+/**
+ * 常用动作:盖顶轻磕/长按(手势 → 确认,创意备忘 §5.1 #1)。
+ * 世界侧只做"按住 pressMs 再松开";事件由 LidSensor 在**松手**时按接触时长分类发出
+ * (与真固件 lid_logic 同构)。pressMs <600 → tap;≥600 → long_press。
+ */
+export function gestureStep(atMs: number, pressMs: number): ScriptStep {
+  const label = pressMs >= 600 ? `长按 ${pressMs}ms(确认)` : `轻磕 ${pressMs}ms(确认)`;
+  return step(atMs, label, (ctx) => {
+    ctx.world.setPress(200); // 接触中(> GESTURE_PRESS_MIN_G)
+    ctx.scheduler.at(ctx.clock.nowMs + pressMs, () => {
+      ctx.world.setPress(0); // 松手 → 本 tick 由 LidSensor 判出 tap/long_press
+    }, '松开盖顶');
   });
 }
 

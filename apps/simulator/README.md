@@ -12,6 +12,11 @@
 
 时间可加速(默认 60×,`--scale 86400` 即 1 秒 = 1 天),故"跑一天"是秒级的。
 
+> ⚠️ **重跑回填前必读(头一撞的坑)**:后端事件去重是**进程内**的(`seenEvents` Set,键 `device_id|ts|type`),
+> 而 PG 的 `appendEvent` 是**纯 INSERT 无 ON CONFLICT**;日聚合又是**加法**的。于是——
+> **同一服务生命周期内重跑 `--backfill` 会被去重(无害);但重启后端后再跑会叠加,把 drank_ml/连击灌成假的**。
+> 要重置:删杯 / 换 `cup_id` / 清库,三选一。见下方「多日回填」。
+
 ## 快速开始
 
 ```bash
@@ -22,6 +27,7 @@ node apps/simulator/src/cli.ts --days 3              # 连跑 3 天
 node apps/simulator/src/cli.ts --ws 8787             # 同时起 WS 服务
 node apps/simulator/src/cli.ts --mqtt mqtt://localhost:1883   # 经外部 broker 发
 node apps/simulator/src/cli.ts --quiet               # 只看事件
+node apps/simulator/src/cli.ts --backfill 90         # 向后端回填 90 天历史(成长/连击)
 ```
 
 ## 命令行参数
@@ -37,6 +43,31 @@ node apps/simulator/src/cli.ts --quiet               # 只看事件
 | `--start` | 脚本内定 | 起始墙钟(`HH:MM`) |
 | `--report-ms` | `300000` | 上报间隔(模拟端侧节奏) |
 | `--quiet` | 关 | 只输出事件,不打每步日志 |
+| `--backfill` | 关 | **回填模式**:生成 N 天历史事件并 POST 到后端 `/cups/:id/ingest`(给成长/连击铺底) |
+| `--target` | `goal` | 回填档位:`goal`(每天达标+隔天续杯)/ `sparse`(只铺时间跨度) |
+| `--server` | `http://localhost:8788` | 回填目标后端(亦可 env `CUP_SERVER`) |
+| `--api-key` | env `CUP_API_KEY` | 回填用的写端点设备钥(后端开了鉴权则必给) |
+
+## 多日回填(给成长/连击铺底)
+
+杯子的养成闭环(成长阶段、里程碑、连续达标)全靠 `daily_agg` 日聚合,而聚合要**真喝过才有数**。
+`--backfill` 就是**离线补历史**的正式出口:生成 N 天 `drink`/`refill` 事件(ts 回填到过去),
+按**旧→新**逐天 POST 到后端既有的 ingest 端点 —— 不碰 store、不改契约、后端一行不动。
+
+```bash
+# 后端先起(--allow-unauth 省去设备钥)
+node apps/server/src/cli.ts --allow-unauth
+# 90 天"每天达标"档 → 连击/累计达标/续杯 全阶梯解锁
+node apps/simulator/src/cli.ts --backfill 90 --target goal
+# 20 天"稀疏"档 → 只撑时间跨度(阶段升),连击/续杯基本不动
+node apps/simulator/src/cli.ts --backfill 20 --target sparse
+curl localhost:8788/cups/cup-A1B2C3/growth   # 看结果
+```
+
+- **只造事件,不造遥测**:成长/连击/续杯全部由事件驱动(`drank_ml`/`refill_ml`/`event_count`),
+  合成 drink/refill 足矣;伪造温度/液位是假数据,不做。
+- **固定 seed → 同输入同输出**;`--target` 选档见上。
+- ⚠️ 重跑前先看**文首那条**警告:重启后端后重跑会叠加(日聚合累加)。要重置请删杯 / 换 cup_id / 清库。
 
 ## 手动触发(WS 控制通道)
 
@@ -44,9 +75,10 @@ node apps/simulator/src/cli.ts --quiet               # 只看事件
 
 ```json
 {"type":"drink","ml":60}
-{"type":"refill","targetMl":300,"pourC":25}          倒水回杯(常温)
-{"type":"hot_water","targetMl":300,"pourC":85}       倒热水(触发过热)
-{"type":"shake","durationMs":1500}                   摇杯
+{"type":"refill","target_ml":300,"pour_c":25}       倒水回杯(常温)
+{"type":"hot_water","target_ml":300,"pour_c":85}    倒热水(触发过热)
+{"type":"shake","duration_ms":1500}                摇杯
+{"type":"press","duration_ms":150}                  按压盖顶(→ tap/long_press 手势)
 {"type":"tilt","deg":50,"dir":90} / {"type":"idle"}  倾倒 / 回正
 {"type":"lift"} / {"type":"put_down"}                拿起 / 放下
 {"type":"set_temp","c":70}                           直接设水温
@@ -72,8 +104,8 @@ topic 名在 `src/mqtt/server.ts`(`upTopic` / `downTopic`)。**运行时源码�
 
 ```
 src/core/     引擎与虚拟世界
-  engine.ts     时间步进 + 帧产出(step / drinkStep / shakeStep / hotWaterStep …)
-  world.ts      杯子状态(液位 / 水温 / 底座称重)
+  engine.ts     时间步进 + 帧产出(step / drinkStep / shakeStep / gestureStep / hotWaterStep …)
+  world.ts      杯子状态(液位 / 水温 / 底座称重 / 盖顶压力)
   clock.ts      虚拟时钟(VirtualClock / dayStartMs),驱动加速
   scheduler.ts  脚本调度
   control.ts    手动控制指令(parseControl / applyControl)
@@ -83,7 +115,9 @@ src/sensors/  假传感器
 src/ws/       WebSocket 出口(toFrames:帧 → 契约 UpstreamFrame[])
 src/mqtt/     MQTT 出口(设备协议)
 src/scenarios/day.ts   行为脚本(typicalDay / smoke)
+src/scenarios/backfill.ts  多日历史回填(buildBackfill / runBackfill,给成长/连击铺底)
 src/util/rng.ts        可复现随机(createRng / gaussian)
+src/util/claim.ts      设备一次性绑定码(generateClaim / buildHello,可信绑定设备半)
 ```
 
 ## 测试
@@ -93,4 +127,4 @@ npm test                                          # 根:契约 + 模拟器 + 后
 node --test --test-reporter=spec "apps/simulator/test/*.test.ts"   # 只跑模拟器
 ```
 
-`test/behavior.test.ts`(行为)、`contract.test.ts`(帧过契约)、`control.test.ts`(手动控制钳制/拒绝)、`mqtt-output.test.ts`(MQTT 出口形状 + 真 broker)。
+`test/behavior.test.ts`(行为)、`contract.test.ts`(帧过契约)、`control.test.ts`(手动控制钳制/拒绝)、`mqtt-output.test.ts`(MQTT 出口形状 + 真 broker)、`claim.test.ts`(一次性绑定码形状与确定性)、`backfill.test.ts`(多日回填:可复现/旧→新/契约合规/两档)。

@@ -23,6 +23,8 @@ export interface WorldSnapshot {
   lidCharging: boolean;
   /** 电池仓温度(用于超温保护)—— 比水温低,但有热耦合 */
   battC: number;
+  /** 盖顶压力(g);0 = 无接触。手势(tap/long_press)的信号源,镜像固件 lid_logic 的 press_g */
+  pressG: number;
 }
 
 const AMBIENT_C = 24; // 室温
@@ -42,6 +44,7 @@ export class World {
   private lidBatteryPct = 100;
   private baseBatteryPct = 100;
   private battCValue = AMBIENT_C;
+  private pressGValue = 0;
   private lastMs: number;
 
   constructor(init: {
@@ -135,6 +138,11 @@ export class World {
     this.lidBatteryPct = clamp(pct, 0, 100);
   }
 
+  /** 设盖顶压力(g);0 = 无接触。手势脚本用它"按住/松开"盖顶。 */
+  setPress(g: number): void {
+    this.pressGValue = clamp(g, 0, 2000);
+  }
+
   drainBattery(realDeltaMs: number, charging: boolean): void {
     // 极慢的实时消耗;时间加速下会等比放大(这不是物理模拟,只为展示低电场景)
     const drainPerMs = charging ? 0 : -0.00002 / 1000;
@@ -159,6 +167,7 @@ export class World {
       baseBatteryPct: this.baseBatteryPct,
       lidCharging: this.onBase,
       battC: this.battCValue,
+      pressG: this.pressGValue,
     };
   }
 

@@ -22,6 +22,7 @@ test('parseControl:合法指令逐条解析', () => {
     [{ type: 'refill', target_ml: 300, pour_c: 55 }, 'refill'],
     [{ type: 'hot_water', target_ml: 300, pour_c: 85 }, 'hot_water'],
     [{ type: 'shake', duration_ms: 1500 }, 'shake'],
+    [{ type: 'press', duration_ms: 150 }, 'press'],
     [{ type: 'tilt', deg: 50, dir: 90 }, 'tilt'],
     [{ type: 'idle' }, 'idle'],
     [{ type: 'lift' }, 'lift'],
@@ -57,6 +58,14 @@ test('parseControl:数值越界被钳制,不静默丢弃', () => {
   const d = parseControl({ type: 'shake', duration_ms: 0 });
   assert.ok(d.ok);
   if (d.cmd.type === 'shake') assert.equal(d.cmd.durationMs, 100); // 下限
+
+  // press:时长钳制到 [1, 60000]
+  const e = parseControl({ type: 'press', duration_ms: 999_999 });
+  assert.ok(e.ok);
+  if (e.cmd.type === 'press') assert.equal(e.cmd.durationMs, 60_000);
+  const f = parseControl({ type: 'press', duration_ms: -5 });
+  assert.ok(f.ok);
+  if (f.cmd.type === 'press') assert.equal(f.cmd.durationMs, 1); // 下限
 });
 
 test('parseControl:tilt 缺 dir 默认 0', () => {
@@ -143,6 +152,19 @@ test('applyControl:hot_water 整杯温度被设为目标', () => {
   assert.equal(s.tempC, 85);
   assert.equal(s.volumeMl, 300);
 });
+
+test('applyControl:press 按住盖顶,到时长后松开', () => {
+  const { ctx } = makeCtx();
+  const detail = applyControl(ctx, { type: 'press', durationMs: 150 });
+  assert.equal(snap(ctx).pressG, 200); // 接触中
+  assert.match(detail.detail, /tap/); // 150ms 归类为 tap
+
+  // 到时长 → 松开(压力归 0);分类与事件由 LidSensor 在松手时给出
+  ctx.clock.advance(160);
+  ctx.scheduler.runDue(ctx.clock.nowMs);
+  assert.equal(snap(ctx).pressG, 0);
+});
+
 
 test('applyControl:tilt / idle / lift / put_down 是持续姿态', () => {
   const { ctx } = makeCtx();

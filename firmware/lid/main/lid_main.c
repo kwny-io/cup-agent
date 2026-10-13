@@ -26,6 +26,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include "celebr.h"
 #include "claim_store.h"
 #include "cmd_exec.h"
 #include "cmd_payload.h"
@@ -85,7 +86,7 @@ static bool sntp_wait(void) {
 
 // ── 事件上报 ──────────────────────────────────────────────────────
 static void publish_event(event_type_t type, bool has_amount, float amount_ml,
-                          bool has_temp, float temp_c) {
+                          bool has_temp, float temp_c, bool has_duration, int duration_ms) {
     cup_event_t e = {0};
     e.ts = now_unix_ms();
     e.type = type;
@@ -93,6 +94,8 @@ static void publish_event(event_type_t type, bool has_amount, float amount_ml,
     e.amount_ml = amount_ml;
     e.has_temp = has_temp;
     e.temp_c = temp_c;
+    e.has_duration = has_duration;
+    e.duration_ms = duration_ms;
     e.confidence = 0.9f;
     e.derived_by = DERIVED_BY_LID;
 
@@ -107,6 +110,10 @@ static void publish_event(event_type_t type, bool has_amount, float amount_ml,
         ESP_LOGW(TAG, "事件发送失败(broker 未连?)");
     }
 }
+
+// 主循环侧:投递一次强制表情(成长庆祝用,实现见下方硬件脸段)。下行 remind 命中
+// 里程碑时经它把"摆什么脸"交给脸任务 —— 先声明,避免在此处触碰 s_eyes。
+static void face_post_expression(eye_state_t state, float seconds);
 
 // ── 下行指令处理:真执行(sync_time 对时 / config 改上报间隔 / remind 记日志)──
 static void on_command(const char *raw_json, const char *cmd_id, int type,
@@ -149,6 +156,18 @@ static void on_command(const char *raw_json, const char *cmd_id, int type,
             break;
         }
         case CMD_TYPE_REMIND: {
+            // 先认"成长庆祝":后端在用户今天新跨里程碑时旁挂一条 remind(reason=milestone)。
+            // 判定在**后端**,端侧只负责"把这条提醒摆成庆祝脸 + 庆祝灯"(celebr 纯 C 决定)。
+            // 命中 → 走庆祝路径;否则落回下面的普通 text/led remind。
+            celebr_plan_t cp;
+            if (celebr_plan(raw_json, cmd_id, &cp)) {
+                face_post_expression(cp.eye, cp.eye_seconds);
+                led_driver_play(&cp.led);
+                ESP_LOGI(TAG, "remind:庆祝! id=%s label=%s → eye=%d %.1fs led=%s",
+                         cp.id[0] ? cp.id : "(无)", cp.label[0] ? cp.label : "(无)",
+                         (int)cp.eye, (double)cp.eye_seconds, led_effect_str(cp.led.effect));
+                break;
+            }
             // 契约 §5:remind.payload = { "text": "...", "led": "breath_blue" }。
             // 注意 led 是**字符串**(效果名),不是整数 —— 早先这里用 cmd_payload_i64 读,
             // 永远读不到(类型不符),等于把 led 丢了。改用 cmd_payload_str。
@@ -238,6 +257,8 @@ static bool publish_telemetry(const sensor_sample_t *s, motion_state_t motion, f
 static eye_eyes_t      s_eyes;                 // 仅脸任务触碰(状态机实例)
 static eye_inputs_t    s_eye_in;               // 主循环写、脸任务读 → 加锁
 static bool            s_eye_drink_pulse;      // 主循环置"喝了一口",脸任务消费并清 → 同锁
+static int             s_eye_expr_state;       // 主循环置"强制表情"(eye_state_t),-1 = 无 → 同锁
+static float           s_eye_expr_sec;         // 强制表情持续秒数
 static SemaphoreHandle_t s_eye_lock;
 static volatile uint32_t s_eye_idle_ms = 0;    // 上次"有事"的本机毫秒(算 idle_sec)
 static volatile uint32_t s_eye_forgot_ms = 0;  // 上次下行/动作的本机毫秒(算 forgot_sec)
@@ -255,6 +276,20 @@ static void face_post_inputs(const eye_inputs_t *in, bool drink_pulse) {
     }
 }
 
+/**
+ * 主循环侧:投递一次**强制表情**(成长庆祝用;手势/庆祝都经这个口)。
+ * 只置脉冲,真正调用 eyes_note_expression 由脸任务在 step 前做(避免跨任务碰 s_eyes)。
+ * @param state    eye_state_t(如 EYE_CONTENT / EYE_SMUG)
+ * @param seconds  持续秒数;<=0 → 用默认庆祝时长
+ */
+static void face_post_expression(eye_state_t state, float seconds) {
+    if (s_eye_lock && xSemaphoreTake(s_eye_lock, 0) == pdTRUE) {
+        s_eye_expr_state = (int)state;
+        s_eye_expr_sec = seconds > 0.0f ? seconds : CELEBR_EYE_S_DEFAULT;
+        xSemaphoreGive(s_eye_lock);
+    }
+}
+
 /** 脸任务:按固定帧率推进眼睛状态机,并按脏行推屏。 */
 static void face_task(void *arg) {
     (void)arg;
@@ -266,10 +301,15 @@ static void face_task(void *arg) {
 
         eye_inputs_t in;
         bool drink = false;
+        int  expr = -1;
+        float expr_sec = 0.0f;
         if (s_eye_lock && xSemaphoreTake(s_eye_lock, portMAX_DELAY) == pdTRUE) {
             in = s_eye_in;
             drink = s_eye_drink_pulse;
             s_eye_drink_pulse = false;
+            expr = s_eye_expr_state;
+            expr_sec = s_eye_expr_sec;
+            s_eye_expr_state = -1;
             xSemaphoreGive(s_eye_lock);
         } else {
             in = eye_inputs_default();
@@ -278,6 +318,7 @@ static void face_task(void *arg) {
         in.forgot_sec = (float)(now - s_eye_forgot_ms) / 1000.0f;
 
         if (drink) eyes_note_drink(&s_eyes);   // 在 step 前应用,避免跨任务触碰 s_eyes
+        if (expr >= 0) eyes_note_expression(&s_eyes, (eye_state_t)expr, expr_sec);
         const eye_pose_t *pose = eyes_step(&s_eyes, dt, &in);
         face_display_show(pose);
     }
@@ -351,6 +392,7 @@ void app_main(void) {
         in.ax = s.ax; in.ay = s.ay; in.az = s.az;
         in.tilt_deg = s.has_tilt ? s.tilt_deg : 0.0f;
         in.battery_pct = s.has_battery ? s.battery_pct : 100;
+        in.press_g = s.has_press ? s.press_g : 0.0f;  // 未接压力传感器 → 0(永不判手势)
 
         lid_logic_out_t out = lid_logic_step(&logic, &in, rel);
 
@@ -393,10 +435,14 @@ void app_main(void) {
         }
 
         // 事件即时上报(时间敏感,不等常规档)
-        if (out.emit_shake) publish_event(EVENT_SHAKE, false, 0, false, 0);
-        if (out.emit_tilt_alert) publish_event(EVENT_TILT_ALERT, false, 0, false, 0);
-        if (out.emit_temp_alert) publish_event(EVENT_TEMP_ALERT, false, 0, true, in.temp_c);
-        if (out.emit_low_battery) publish_event(EVENT_LOW_BATTERY, false, 0, false, 0);
+        if (out.emit_shake) publish_event(EVENT_SHAKE, false, 0, false, 0, false, 0);
+        if (out.emit_tilt_alert) publish_event(EVENT_TILT_ALERT, false, 0, false, 0, false, 0);
+        if (out.emit_temp_alert) publish_event(EVENT_TEMP_ALERT, false, 0, true, in.temp_c, false, 0);
+        if (out.emit_low_battery) publish_event(EVENT_LOW_BATTERY, false, 0, false, 0, false, 0);
+        // 手势(轻磕/长按 → 确认):松手时由 lid_logic 按接触时长分类发出,带 duration_ms。
+        if (out.emit_gesture) {
+            publish_event(out.gesture_type, false, 0, false, 0, true, out.gesture_duration_ms);
+        }
 
         // 常规档遥测按 CUP_REPORT_MS 上报;首帧立刻发一次。
         // 发失败(broker 未连)不推进 last_report,故下个采样周期自动重试,

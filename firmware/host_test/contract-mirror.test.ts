@@ -95,3 +95,43 @@ test('[契约镜像] 手势加法确实落进 C 镜像(反向盯防:契约有、
     assert.ok(enumMembers('event_type_t', 'EVENT_').map((i) => identToContract(i, 'EVENT_')).includes(g), `C 镜像应含 ${g}`);
   }
 });
+
+// ── 手势阈值:固件宏 ↔ 模拟器常量,双侧同源 ───────────────────────────
+// 这四值**不是**契约常量(契约只装结论:事件型 tap/long_press + 必须带 duration_ms;
+// "多长算轻磕、多长算长按"归设备端),故不在上面的枚举对表里。
+// 但固件(contract_dev.h 的 GESTURE_* 宏)与模拟器(lid.ts 的 GESTURE_* 常量)
+// 各自独立写着同一组启发式,容易各改各的 —— 故在此锁死"数值必须相等"。
+// 两侧代码注释都声称"由本文件守护",这里让它成真。
+const simLid = readFileSync(
+  join(here, '..', '..', 'apps', 'simulator', 'src', 'sensors', 'lid.ts'),
+  'utf8',
+);
+
+/** 从固件头文件抠 `#define <name> <number>` 的数值(容忍 `50.0f` 这类后缀)。 */
+function fwMacro(name: string): number {
+  const m = header.match(new RegExp(`#define\\s+${name}\\s+(-?[0-9.]+)`));
+  assert.ok(m, `contract_dev.h 应含宏 ${name}`);
+  return Number(m[1]!.replace(/[fF]$/, ''));
+}
+
+/** 从模拟器 TS 抠 `const <name> = <number>;` 的数值。 */
+function simConst(name: string): number {
+  const m = simLid.match(new RegExp(`const\\s+${name}\\s*=\\s*(-?[0-9.]+)\\s*;`));
+  assert.ok(m, `lid.ts 应含常量 ${name}`);
+  return Number(m[1]);
+}
+
+test('[手势阈值镜像] GESTURE_* 固件宏与模拟器常量数值一致', () => {
+  const pairs: Array<[string, string]> = [
+    ['GESTURE_PRESS_MIN_G', 'GESTURE_PRESS_MIN_G'],
+    ['GESTURE_TAP_MIN_MS', 'GESTURE_TAP_MIN_MS'],
+    ['GESTURE_LONG_PRESS_MS', 'GESTURE_LONG_PRESS_MS'],
+  ];
+  for (const [fw, sim] of pairs) {
+    assert.equal(
+      fwMacro(fw),
+      simConst(sim),
+      `${fw}(固件) 与 ${sim}(模拟器) 数值须一致 —— 两侧同源,别各改各的`,
+    );
+  }
+});

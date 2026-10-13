@@ -48,6 +48,15 @@ extern "C" {
 #define ALERT_BATTERY_LOW_PCT 15  // 电量低于此 → low_battery
 #define ALERT_BATTERY_RESET_PCT 20 // 回升到此才复位(滞回)
 
+// ── 契约常量(手势判定;契约未定义阈值 —— 固件/模拟器自定义)────────
+// 契约只装结论:上行事件只有 `tap`/`long_press` 两型(duration_ms 必须携带),
+// **怎么把按压时长切成这两型由设备端定**(schemas.ts 的注释即此意)。
+// 故这里不是 constants.ts 的镜像,而是固件启发式;[待实测] 上真板后按手感标定。
+// 模拟器 sensors/lid.ts 的 GESTURE 常量为此处镜像,二者由单测守护(firmware/host_test)。
+#define GESTURE_PRESS_MIN_G 50.0f   // 盖顶压力超此值 → 视为"接触中"(否则 0 无接触)
+#define GESTURE_TAP_MIN_MS 40       // 接触短于此 → 判为抖动/噪声,忽略
+#define GESTURE_LONG_PRESS_MS 600   // 接触达此 → long_press;介于两者之间 → tap
+
 // ── 契约常量(镜像 constants.ts 的 SCALE;底座称重判定用它)────────
 // §6.2 底座 · 称重
 #define SCALE_SETTLE_WINDOW_MS 800  // 稳定窗口:窗口内标准差 < 阈值 → stable

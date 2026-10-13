@@ -37,6 +37,9 @@ typedef struct {
 
     bool has_level;
     float level_mm;        // 液位高度 mm(ToF 测)
+
+    bool has_press;        // 盖顶压力传感器(手势用;未接则 false)
+    float press_g;         // 盖顶压力(g);0 = 无接触
 } sensor_sample_t;
 
 /** 初始化所选传感源(默认合成)。 */

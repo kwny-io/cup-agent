@@ -3,10 +3,12 @@
  *
  * 目标不只是"看起来合理",而是**恰好覆盖每种事件**:
  *   drink × N / refill / shake / temp_alert(过热) / low_battery / off_base
+ *   / tap(轻磕确认) / long_press(长按确认)
  * 以及**否定用例**:拿起又放下(未越阈值)→ 不应产生事件。
  */
 import {
   drinkStep,
+  gestureStep,
   hotWaterStep,
   refillStep,
   shakeStep,
@@ -36,6 +38,9 @@ export function typicalDay(): ScriptStep[] {
     drinkStep(hhmm('10:00'), 80),
     shakeStep(hhmm('10:30'), 1500), // 摇杯(英雄功能的数据源)
 
+    // 上午:轻磕盖顶确认(tap,创意备忘 §5.1 #1)
+    gestureStep(hhmm('10:45'), 150),
+
     // 中午:倒热水 → 触发 temp_alert
     hotWaterStep(hhmm('12:00'), 360, 72),
     drinkStep(hhmm('12:20'), 90),
@@ -45,12 +50,21 @@ export function typicalDay(): ScriptStep[] {
     shakeStep(hhmm('15:00'), 2000),
     refillStep(hhmm('15:30'), 380, 45),
     drinkStep(hhmm('16:30'), 130),
+
+    // 下午:长按盖顶确认(long_press)
+    gestureStep(hhmm('17:00'), 900),
+
     drinkStep(hhmm('18:00'), 100),
 
     // 傍晚:把杯子拿走离开(触发 off_base,之后一直不在座上)
     step(hhmm('19:30'), '拿走杯子离开(off_base,之后不在座)', (ctx) => {
       ctx.world.setOnBase(false);
       ctx.world.setMotion('lifted');
+    }),
+
+    // 傍晚:带走了杯子,电量也告急 → 低电提醒(覆盖 low_battery 事件)
+    step(hhmm('20:00'), '电量告急 → 低电提醒', (ctx) => {
+      ctx.world.setLidBattery(12);
     }),
 
     // 晚上回来放回

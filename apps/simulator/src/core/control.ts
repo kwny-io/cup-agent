@@ -16,6 +16,7 @@
  *   {"type":"shake","duration_ms":1500}
  *   {"type":"tilt","deg":50,"dir":90}   /  {"type":"idle"}
  *   {"type":"lift"} / {"type":"put_down"}
+ *   {"type":"press","duration_ms":150}   盖顶按压(→ tap/long_press 手势)
  *   {"type":"set_temp","c":80}
  *   {"type":"pause"} / {"type":"resume"}
  */
@@ -31,6 +32,7 @@ export type ControlCommand =
   | { type: 'idle' }
   | { type: 'lift' }
   | { type: 'put_down' }
+  | { type: 'press'; durationMs: number }
   | { type: 'set_temp'; c: number }
   | { type: 'pause' }
   | { type: 'resume' };
@@ -103,6 +105,13 @@ export function parseControl(raw: unknown): ParseControlResult {
       const durationMs = num(o, 'duration_ms');
       if (durationMs === null) return { ok: false, error: 'shake 需要数字 duration_ms' };
       return { ok: true, cmd: { type: 'shake', durationMs: clamp(durationMs, 100, 60_000) } };
+    }
+    case 'press': {
+      // 盖顶按压(手势):与 shake 同形,给出按压时长;
+      // tap/long_press 的**分类**由 LidSensor 按接触时长决定,这里只管"按多久"。
+      const durationMs = num(o, 'duration_ms');
+      if (durationMs === null) return { ok: false, error: 'press 需要数字 duration_ms' };
+      return { ok: true, cmd: { type: 'press', durationMs: clamp(durationMs, 1, 60_000) } };
     }
     case 'tilt': {
       const deg = num(o, 'deg');
@@ -201,6 +210,13 @@ export function applyControl(ctx: EngineContext, cmd: ControlCommand): ControlOu
       world.setOnBase(true);
       world.setMotion('idle');
       return { ok: true, detail: '放下' };
+    }
+    case 'press': {
+      // 按住盖顶 durationMs 后松开;事件由 LidSensor 在松手时分类(与真固件同构)。
+      world.setPress(200);
+      scheduler.at(now + cmd.durationMs, () => world.setPress(0), '手动:松开盖顶');
+      const kind = cmd.durationMs >= 600 ? 'long_press' : 'tap';
+      return { ok: true, detail: `按压盖顶 ${cmd.durationMs}ms(→ ${kind})` };
     }
     case 'set_temp': {
       world.setTemp(cmd.c);

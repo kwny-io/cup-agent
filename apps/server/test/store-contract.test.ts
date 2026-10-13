@@ -252,6 +252,47 @@ async function runStoreContract(name: string, make: () => Promise<Store>, done?:
     assert.equal(cards[1]?.date, yesterday);
     await done?.();
   });
+
+  await test(`[${name}] recentMemoryCards：366 整窗跨年（含 date-365、不含 date-366）`, async () => {
+    const s = await make();
+    const today = dayKey(Date.now());
+    const mk = (date: string) => ({
+      cup_id: CUP,
+      date,
+      details: {
+        drank_ml: 500,
+        goal_ml: 1500,
+        reached: false,
+        streak: 0,
+        refill_count: 0,
+        temp_range: null,
+        notable_events: [],
+        body_cues: [],
+        turns_summary: null,
+        turn_count: 0,
+      },
+      built_at: 1,
+    });
+    // 窗内:today 及其 -1/-100/-200/-365;窗外:today-366（恰越窗一天）
+    const inside = [-365, -200, -100, -1, 0].map((d) => shiftDay(today, d));
+    for (const date of inside) await s.putMemoryCard(mk(date));
+    await s.putMemoryCard(mk(shiftDay(today, -366)));
+
+    const cards = await s.recentMemoryCards(CUP, today, 366);
+    assert.equal(cards.length, 5, '窗内 5 张,窗外 1 张不返回');
+    assert.deepEqual(cards.map((c) => c.date), inside, '旧→新,且只含窗内(稀疏不补空)');
+    // 「回忆」要跨年翻:窗首(today-365)必须已落到更早的年份
+    assert.ok(
+      Number(cards[0]!.date.slice(0, 4)) < Number(today.slice(0, 4)),
+      '366 整窗应跨年(窗首年份早于今年)',
+    );
+
+    // 收窄到 365 天:from = today-364,today-365 恰被排除(边界逐字对齐 "days-1")
+    const narrow = await s.recentMemoryCards(CUP, today, 365);
+    assert.ok(!narrow.some((c) => c.date === shiftDay(today, -365)), 'days=365 排除 today-365');
+    assert.equal(narrow.length, 4, '仅去掉最旧一张');
+    await done?.();
+  });
 }
 
 // ── Memory 总跑 ────────────────────────────────────────────────

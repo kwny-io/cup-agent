@@ -24,6 +24,8 @@ void lid_logic_init(lid_logic_t *st) {
     st->low_batt_alerted = false;
     st->lifting = false;
     st->lift_since_ms = 0;
+    st->press_contact = false;
+    st->press_since_ms = 0;
 }
 
 lid_logic_out_t lid_logic_step(lid_logic_t *st, const lid_logic_in_t *in, uint32_t now_ms) {
@@ -101,6 +103,28 @@ lid_logic_out_t lid_logic_step(lid_logic_t *st, const lid_logic_in_t *in, uint32
         st->lifting = false;
     }
     bool lifted_now = st->lifting && (now_ms - st->lift_since_ms) >= IMU_LIFTED_MS;
+
+    // ── 手势:盖顶压力 → 松手时按接触时长分 tap/long_press ──
+    // 状态机极简:接触上升沿记时,下降沿(松手)按时长分类发一次事件。
+    // 为什么在"松手"发而非"够久即发":接触时长只有到松手才知道,一次性算准;
+    // 且一次接触恰好一个事件(不重复),与契约 duration_ms 天然对齐。
+    // 短于 GESTURE_TAP_MIN_MS 的接触视为抖动/噪声,丢弃(不产生事件)。
+    bool contact = in->press_g >= GESTURE_PRESS_MIN_G;
+    if (contact) {
+        if (!st->press_contact) {
+            st->press_contact = true;
+            st->press_since_ms = now_ms;
+        }
+    } else if (st->press_contact) {
+        st->press_contact = false;
+        uint32_t dur = now_ms - st->press_since_ms;
+        if (dur >= (uint32_t)GESTURE_TAP_MIN_MS) {
+            out.emit_gesture = true;
+            out.gesture_type = (dur >= (uint32_t)GESTURE_LONG_PRESS_MS) ? EVENT_LONG_PRESS
+                                                                       : EVENT_TAP;
+            out.gesture_duration_ms = (int)dur;
+        }
+    }
 
     // ── 合成 motion(优先级:shake > tilt > lifted > idle)──
     if (in_shake_hold) {

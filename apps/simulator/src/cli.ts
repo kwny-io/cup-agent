@@ -9,9 +9,11 @@
  *   node apps/simulator/src/cli.ts --ws 8787               # 同时起 WebSocket 服务
  *   node apps/simulator/src/cli.ts --mqtt mqtt://localhost:1883  # 经外部 broker 发(设备协议)
  *   node apps/simulator/src/cli.ts --quiet                 # 只看事件,不看每步日志
+ *   node apps/simulator/src/cli.ts --backfill 90 --target goal   # 向后端回填 90 天历史(成长/连击)
  */
 import { Engine, dayStartMs, type Frame } from './core/engine.ts';
 import { typicalDay, smoke } from './scenarios/day.ts';
+import { runBackfill, type BackfillTier } from './scenarios/backfill.ts';
 import { startWsServer } from './ws/server.ts';
 import { startMqttOutput } from './mqtt/server.ts';
 import { parseControl, applyControl } from './core/control.ts';
@@ -29,6 +31,11 @@ interface Args {
   seed: number;
   start: string | null;
   reportMs: number;
+  /** 回填天数(非 null 则走回填模式:不再实时跑,只把历史灌进后端) */
+  backfill: number | null;
+  backfillTarget: BackfillTier;
+  server: string;
+  apiKey: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -42,6 +49,10 @@ function parseArgs(argv: string[]): Args {
     seed: 42,
     start: null,
     reportMs: 300_000,
+    backfill: null,
+    backfillTarget: 'goal',
+    server: process.env.CUP_SERVER ?? 'http://localhost:8788',
+    apiKey: process.env.CUP_API_KEY ?? null,
   };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -82,9 +93,28 @@ function parseArgs(argv: string[]): Args {
         a.reportMs = Number(v);
         i++;
         break;
+      case '--backfill':
+        a.backfill = Number(v);
+        i++;
+        break;
+      case '--target':
+        a.backfillTarget = v === 'sparse' ? 'sparse' : 'goal';
+        i++;
+        break;
+      case '--server':
+        a.server = v ?? a.server;
+        i++;
+        break;
+      case '--api-key':
+        a.apiKey = v ?? null;
+        i++;
+        break;
       case '--help':
         console.log(
           'node apps/simulator/src/cli.ts [--scale N] [--scenario day|smoke] [--days N] [--ws PORT] [--mqtt URL] [--quiet] [--seed N] [--start HH:MM] [--report-ms N]',
+        );
+        console.log(
+          'node apps/simulator/src/cli.ts --backfill <days> [--target goal|sparse] [--server URL] [--api-key KEY]  # 向后端回填历史',
         );
         process.exit(0);
     }
@@ -92,8 +122,49 @@ function parseArgs(argv: string[]): Args {
   return a;
 }
 
+/**
+ * 回填模式 —— 生成 N 天历史事件,按**旧 → 新**逐天 POST 到后端 `/cups/:id/ingest`。
+ * 与实时跑一天不同:这里是**离线补历史**(ts 回填到过去),后端既有的 ingest 端点照单全收。
+ */
+function runBackfillMode(args: Args): void {
+  const days = Math.max(1, Math.floor(args.backfill ?? 1));
+  // 用引擎的默认设备 id(与实时模式一致;回填的目标就是同一只杯)
+  const cupId = 'cup-A1B2C3';
+  const baseId = 'base-A1B2C3';
+  console.log('─'.repeat(64));
+  console.log(`回填 | 天数=${days} 档位=${args.backfillTarget} 目标后端=${args.server}`);
+  console.log(`     设备 base=${baseId} cup=${cupId} seed=${args.seed}`);
+  console.log(`     鉴权: ${args.apiKey ? '带 x-api-key' : '不带(后端须 --allow-unauth 或免鉴权)'}`);
+  console.log('─'.repeat(64));
+  void runBackfill({
+    server: args.server,
+    cupId,
+    baseId,
+    days,
+    tier: args.backfillTarget,
+    seed: args.seed,
+    apiKey: args.apiKey,
+  })
+    .then((r) => {
+      console.log('─'.repeat(64));
+      console.log(`✅ 回填完成 | ${r.days} 天 → 收 ${r.accepted} / 去重 ${r.deduped} / 拒 ${r.rejected}`);
+      console.log('   (连击/成长指标的最终值由后端日聚合给出;重复跑同一后端会被去重)');
+      console.log('─'.repeat(64));
+    })
+    .catch((e: unknown) => {
+      console.error(`❌ 回填失败:${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    });
+}
+
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
+
+  // 回填模式:不实时跑,只把历史事件灌进后端(详见 scenarios/backfill.ts)。
+  if (args.backfill !== null) {
+    runBackfillMode(args);
+    return;
+  }
 
   let startMs = dayStartMs(Date.now());
   if (args.start) {
