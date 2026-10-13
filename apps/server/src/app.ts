@@ -32,8 +32,14 @@ import {
   type CupLlmStore,
 } from './core/cup-llm.ts';
 import { ProactiveScheduler } from './core/proactive.ts';
-import { createLogger, type LogLevel } from './core/logger.ts';
+import { consoleSink, createLogger, type LogLevel } from './core/logger.ts';
+import { composeSinks, createLogPipeline, type LogSinkHandle } from './core/log-pipeline.ts';
+import { redactFields } from './core/redact.ts';
+import type { ServerLogStore } from './core/log-store.ts';
+import { MemoryServerLogStore } from './store/memory-server-logs.ts';
 import { createPgPool, type Pool } from './store/pg/pool.ts';
+import { PgServerLogStore } from './store/pg/server-logs.ts';
+import type { RetentionOptions } from './store/pg/migrate.ts';
 import { PgStore } from './store/pg/store.ts';
 import { PgChatStore } from './store/pg/chat.ts';
 import { PgAccountsStore } from './store/pg/accounts.ts';
@@ -109,6 +115,10 @@ export interface AppOptions {
    * role='admin'。**不新增注册口子**:管理员也只能走正常注册。
    */
   adminEmail?: string;
+  /** 运维邮箱名单(cli 从 env `CUP_OPS_EMAILS` 读入,逗号分隔);注册命中 → role='ops' */
+  opsEmails?: readonly string[];
+  /** 审核邮箱名单(cli 从 env `CUP_REVIEWER_EMAILS` 读入,逗号分隔);注册命中 → role='reviewer' */
+  reviewerEmails?: readonly string[];
   /**
    * 绑定杯子须出示设备一次性 claim code(可信绑定,风险 R18)。
    * **默认 false** → 绑定行为与从前一致(零回归);设备/模拟器两半验收后由用户开。
@@ -122,6 +132,20 @@ export interface AppOptions {
   logLevel?: LogLevel;
   /** 内置 logger 的输出格式(缺省 text;env CUP_LOG_FORMAT=json 切 JSON) */
   logFormat?: 'text' | 'json';
+  /**
+   * 日志持久化:JSONL 文件出口目录(env `CUP_LOG_DIR`)。给了才落文件;
+   * 与 pgUrl 任一存在即启用持久化管线。不给且无 pgUrl → 行为与从前一致(只打控制台)。
+   */
+  logDir?: string | null;
+  /**
+   * 控制台静音(env `--quiet`)。**不影响持久化**:只把 console sink 摘掉,
+   * 落库/落文件照常 —— "安静跑但仍然可回看"。
+   */
+  logQuiet?: boolean;
+  /** 服务日志存储(测试注入;不给则 PG 模式用 Pg 实现、否则内存实现) */
+  serverLogs?: ServerLogStore;
+  /** 保留策略选项(传给 `/admin/logs/retain`;env 由 cli 读入) */
+  retention?: RetentionOptions;
 }
 
 export interface App {
@@ -140,6 +164,8 @@ export interface App {
   profiles: ProfileStore;
   /** 每杯模型配置门面(BYOK;见 core/cup-llm.ts) */
   cupLlm: CupLlmService;
+  /** 服务日志存储(结构化日志落库/内存) */
+  serverLogs: ServerLogStore;
   /** 文件持久化句柄(未启用 dataDir 时为 null) */
   persist: FilePersistence | null;
   /** 主动开口调度器(未开启 proactive 时为 null) */
@@ -158,11 +184,31 @@ export interface App {
 }
 
 export function createApp(opts: AppOptions = {}): App {
-  const log = opts.log ?? createLogger({ level: opts.logLevel, format: opts.logFormat });
   // 有 dataDir → 文件持久化:目标恢复 + 变更回调 + 对话轮落盘(ADR T14)。
   // 用一个可选钩子接进 MemoryStore,**不动 Store 接口**(T3「只换实现,不动上层」)。
   // 注意:选 Pg 时不建 persist(持久化的活儿归 DB;state.json 不参与)。
   const pool = opts.pgPool ?? (opts.pgUrl ? createPgPool(opts.pgUrl) : null);
+  // 服务日志存储(照四个 store 三元式):注入 > PG > 内存。
+  const serverLogs = opts.serverLogs ?? (pool ? new PgServerLogStore(pool) : new MemoryServerLogStore());
+  // 持久化管线:**只在"未注入 log"且"有落点"时**启 —— 注入 log 的既有测试完全走老路(零回归),
+  // 且 `--quiet` 只摘 console sink、不影响落库/落文件。管线激活时强制 json 格式(sink 拿到的是
+  // 已序列化字符串,只有 JSON 行能结构还原成列)。
+  const persistent: LogSinkHandle | null =
+    !opts.log && (pool || opts.logDir)
+      ? createLogPipeline({ append: (rows) => serverLogs.append(rows), dir: opts.logDir ?? null, now: Date.now })
+      : null;
+  const log =
+    opts.log ??
+    createLogger({
+      level: opts.logLevel,
+      format: persistent ? 'json' : opts.logFormat,
+      sink: persistent
+        ? opts.logQuiet
+          ? persistent.sink
+          : composeSinks(consoleSink, persistent.sink)
+        : undefined,
+      redact: persistent ? redactFields : undefined,
+    });
   const persist = !pool && opts.dataDir ? new FilePersistence(opts.dataDir) : null;
   const store =
     opts.store ??
@@ -254,9 +300,14 @@ export function createApp(opts: AppOptions = {}): App {
     accounts,
     profiles,
     adminEmail: opts.adminEmail,
+    opsEmails: opts.opsEmails,
+    reviewerEmails: opts.reviewerEmails,
     claims,
     requireClaim: opts.requireClaim,
     cupLlm,
+    serverLogs,
+    pgPool: pool ?? undefined,
+    retention: opts.retention,
     log,
   });
   live.attach(server);
@@ -276,6 +327,7 @@ export function createApp(opts: AppOptions = {}): App {
     claims,
     profiles,
     cupLlm,
+    serverLogs,
     persist,
     proactive,
     apiKey: apiKey ?? null,
@@ -302,6 +354,7 @@ export function createApp(opts: AppOptions = {}): App {
       await profiles.flush(); // 人格档案落盘(内存/Pg 实现 no-op)
       await cupLlm.flush(); // 每杯模型配置落盘(内存/Pg 实现 no-op)
       await persist?.flush(); // 目标 + 画像落盘(仅文件实现)
+      await persistent?.close(); // 排干日志缓冲(落库 + 落文件)—— 须在 pool.end() 之前
       await pool?.end(); // 关 pg 连接池(仅 Pg 模式)
       await new Promise<void>((r) => server.close(() => r()));
     },

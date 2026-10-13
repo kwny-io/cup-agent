@@ -46,10 +46,13 @@ export {
   parseLogLevel,
   parseLogFormat,
   LOG_LEVELS,
+  consoleSink,
   type Logger,
   type LoggerOptions,
   type LogFields,
   type LogLevel,
+  type LogEntry,
+  type Redactor,
 } from './core/logger.ts';
 export {
   runChat,
@@ -101,6 +104,7 @@ export {
   retainDaysFromEnv,
   DEFAULT_TELEMETRY_RETAIN_DAYS,
   DEFAULT_EVENTS_RETAIN_DAYS,
+  DEFAULT_SERVER_LOGS_RETAIN_DAYS,
   type RetentionOptions,
 } from './store/pg/migrate.ts';
 export { PgStore } from './store/pg/store.ts';
@@ -108,6 +112,32 @@ export { PgChatStore } from './store/pg/chat.ts';
 export { PgAccountsStore } from './store/pg/accounts.ts';
 export { PgProfileStore } from './store/pg/profile.ts';
 export { PgCupLlmStore } from './store/pg/cup-llm.ts';
+export { PgServerLogStore } from './store/pg/server-logs.ts';
+// ── 服务日志端(结构化日志落库/落文件 + 管理页读写口)──────────────
+export { MemoryServerLogStore, type MemoryServerLogOptions } from './store/memory-server-logs.ts';
+export {
+  LOG_PAGE_DEFAULT,
+  LOG_PAGE_MAX,
+  makeLogCursor,
+  parseLogCursor,
+  type LogRow,
+  type LogQuery,
+  type LogPage,
+  type ServerLogStore,
+} from './core/log-store.ts';
+export {
+  createLogPipeline,
+  composeSinks,
+  parseLogLine,
+  LOG_FLUSH_INTERVAL_MS,
+  LOG_MAX_BUFFER,
+  LOG_MAX_BATCH,
+  LOG_MAX_FILE_BYTES,
+  type LogSinkHandle,
+  type LogPipelineOptions,
+  type FileSink,
+} from './core/log-pipeline.ts';
+export { redactFields, maskEmail, SENSITIVE_KEYS, REDACTED } from './core/redact.ts';
 export {
   register,
   login,

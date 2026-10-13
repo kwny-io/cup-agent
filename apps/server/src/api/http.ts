@@ -64,6 +64,10 @@ import {
 } from '../core/social/types.ts';
 import { MemoryProfileStore, type ProfileStore } from '../core/traits.ts';
 import type { LogLevel } from '../core/logger.ts';
+import { LOG_LEVELS } from '../core/logger.ts';
+import { LOG_PAGE_MAX, type LogQuery, type ServerLogStore } from '../core/log-store.ts';
+import { applyRetention, listPartitions, type RetentionOptions } from '../store/pg/migrate.ts';
+import { query, type Pool } from '../store/pg/pool.ts';
 import { computePersonality, traitRecord } from '../core/personality.ts';
 import { closeDayCard } from '../core/memory-cards.ts';
 
@@ -104,6 +108,10 @@ export interface ApiDeps {
   profiles?: ProfileStore;
   /** 首个管理员引导邮箱(env CUP_ADMIN_EMAIL);注册命中即 role='admin' */
   adminEmail?: string;
+  /** 运维邮箱名单(env CUP_OPS_EMAILS);注册命中即 role='ops' */
+  opsEmails?: readonly string[];
+  /** 审核邮箱名单(env CUP_REVIEWER_EMAILS);注册命中即 role='reviewer' */
+  reviewerEmails?: readonly string[];
   /** 可信绑定核验(claim code);见 core/social/claim.ts */
   claims?: ClaimService;
   /** 每杯模型配置(BYOK);给了则 `/ask` 用该杯自己的模型,并开放 `/cups/:id/llm` 读写口 */
@@ -113,6 +121,13 @@ export interface ApiDeps {
    * 设备/模拟器两半验收后由用户开。
    */
   requireClaim?: boolean;
+  /** 服务日志读写口(结构化日志落库);不给 → `/admin/logs` 返回空表(服务照常) */
+  serverLogs?: ServerLogStore;
+  /** 保留策略选项(psql 日志/遥测/事件保留天数);给 `POST /admin/logs/retain` 用 */
+  retention?: RetentionOptions;
+  /** pg 连接池(仅 PG 模式);给 `/admin/logs/partitions` + `retain` 用。无则两路由回空表/空数组。 */
+  pgPool?: Pool;
+  /** 触发保留清理时的报错口(默认静默);便于测试断言 */
   log?: (msg: string, level?: LogLevel) => void;
 }
 
@@ -199,6 +214,15 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
   if (verdict) {
     return await adminPackVerdictRoute(req, res, deps, decodeURIComponent(verdict[1]!), verdict[2]!);
   }
+  if (path === '/admin/logs') {
+    return await adminLogsRoute(req, res, deps, url);
+  }
+  if (path === '/admin/logs/partitions') {
+    return await adminLogPartitionsRoute(req, res, deps);
+  }
+  if (path === '/admin/logs/retain') {
+    return await adminLogRetainRoute(req, res, deps);
+  }
 
   // ── 杯子社交(#74;需登录会话)──
   if (path === '/social/friends') {
@@ -280,7 +304,12 @@ async function authRoute(
   deps: ApiDeps,
   action: string,
 ): Promise<void> {
-  const authDeps = { store: deps.accounts!, adminEmail: deps.adminEmail };
+  const authDeps = {
+    store: deps.accounts!,
+    adminEmail: deps.adminEmail,
+    opsEmails: deps.opsEmails,
+    reviewerEmails: deps.reviewerEmails,
+  };
   const method = req.method ?? 'GET';
 
   if (action === 'register') {
@@ -336,7 +365,7 @@ async function guardUser(
   deps: ApiDeps,
 ): Promise<PublicUser | null> {
   const user = await resolveSession(
-    { store: deps.accounts!, adminEmail: deps.adminEmail },
+    { store: deps.accounts!, adminEmail: deps.adminEmail, opsEmails: deps.opsEmails, reviewerEmails: deps.reviewerEmails },
     bearerToken(req.headers['authorization']),
   );
   if (!user) {
@@ -356,6 +385,36 @@ async function guardAdmin(
   if (!user) return null;
   if (user.role !== 'admin') {
     send(res, 403, { error: '需要管理员权限' });
+    return null;
+  }
+  return user;
+}
+
+/** 日志查看守卫:会话 + role ∈ {admin, ops, reviewer};未登录 → 401,其余角色 → 403 */
+async function guardLogReader(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<PublicUser | null> {
+  const user = await guardUser(req, res, deps);
+  if (!user) return null;
+  if (user.role !== 'admin' && user.role !== 'ops' && user.role !== 'reviewer') {
+    send(res, 403, { error: '需要运维/审核或管理员权限' });
+    return null;
+  }
+  return user;
+}
+
+/** 日志运维守卫:会话 + role ∈ {admin, ops}(reviewer 只读,不得触发清理)→ 未登录 401,其余 403 */
+async function guardLogOps(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<PublicUser | null> {
+  const user = await guardUser(req, res, deps);
+  if (!user) return null;
+  if (user.role !== 'admin' && user.role !== 'ops') {
+    send(res, 403, { error: '需要运维或管理员权限' });
     return null;
   }
   return user;
@@ -514,6 +573,81 @@ async function adminPackVerdictRoute(
   await deps.accounts!.setPackStatus(packId, status);
   const updated = await deps.accounts!.packById(packId);
   send(res, 200, { pack: packView(updated!) });
+}
+
+// ── 服务日志(admin/ops/reviewer 回看)───────────────────────────
+//
+// 读 = admin/ops/reviewer(guardLogReader);触发保留清理 = admin/ops(guardLogOps,reviewer 只读)。
+// 无 PG(pool)时 `serverLogs` 为空 → `GET /admin/logs` 返回空表(服务照常),不报错。
+
+/** 把 query 里的 level 参数(可重复或逗号分隔)解析成级别白名单;非法值丢弃。 */
+function parseLevels(url: URL): LogLevel[] | undefined {
+  const raw = url.searchParams.getAll('level').flatMap((v) => v.split(','));
+  const out = raw.map((s) => s.trim().toLowerCase()).filter((s): s is LogLevel => (LOG_LEVELS as readonly string[]).includes(s));
+  return out.length > 0 ? [...new Set(out)] : undefined;
+}
+
+/**
+ * GET /admin/logs?level=&src=&q=&from=&to=&limit=&cursor=
+ *   → 200 { logs: LogRow[], next_cursor: string | null }
+ * 无日志 store → 空表。limit 缺省 100、上限 {@link LOG_PAGE_MAX}。
+ */
+async function adminLogsRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps, url: URL): Promise<void> {
+  const reader = await guardLogReader(req, res, deps);
+  if (!reader) return;
+  if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'use GET' });
+
+  const q: LogQuery = {
+    levels: parseLevels(url),
+    q: url.searchParams.get('q') ?? undefined,
+    cursor: url.searchParams.get('cursor') ?? undefined,
+  };
+  const src = url.searchParams.get('src');
+  if (src !== null) q.src = src;
+  const from = num(url.searchParams.get('from'));
+  if (from !== null) q.from = from;
+  const to = num(url.searchParams.get('to'));
+  if (to !== null) q.to = to;
+  const limit = num(url.searchParams.get('limit'));
+  if (limit !== null) q.limit = Math.min(Math.max(1, limit), LOG_PAGE_MAX);
+
+  if (!deps.serverLogs) return send(res, 200, { logs: [], next_cursor: null });
+  const page = await deps.serverLogs.query(q);
+  send(res, 200, { logs: page.rows, next_cursor: page.next_cursor });
+}
+
+/** GET /admin/logs/partitions → 200 { partitions: { name, bytes }[] };无 PG → 空。 */
+async function adminLogPartitionsRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<void> {
+  const reader = await guardLogReader(req, res, deps);
+  if (!reader) return;
+  if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'use GET' });
+  if (!deps.pgPool) return send(res, 200, { partitions: [] });
+  const names = await listPartitions(deps.pgPool, 'server_logs');
+  const sizes = await query<{ relname: string; bytes: number | string }>(
+    deps.pgPool,
+    `SELECT c.relname AS relname, pg_total_relation_size(c.oid) AS bytes
+       FROM pg_class c
+       JOIN pg_inherits i ON i.inhrelid = c.oid
+       JOIN pg_class p ON p.oid = i.inhparent
+      WHERE p.relname = $1`,
+    ['server_logs'],
+  );
+  const byName = new Map(sizes.map((r) => [r.relname, Number(r.bytes)]));
+  const partitions = names.map((name) => ({ name, bytes: byName.get(name) ?? 0 }));
+  send(res, 200, { partitions });
+}
+
+/**
+ * POST /admin/logs/retain → 200 { dropped: string[] }
+ * **不可逆**(删过期整月分区);幂等。reviewer → 403(只读)。
+ */
+async function adminLogRetainRoute(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<void> {
+  const ops = await guardLogOps(req, res, deps);
+  if (!ops) return;
+  if ((req.method ?? 'GET') !== 'POST') return send(res, 405, { error: 'use POST' });
+  if (!deps.pgPool) return send(res, 200, { dropped: [] });
+  const dropped = await applyRetention(deps.pgPool, deps.retention ?? {}, deps.log ?? (() => {}));
+  send(res, 200, { dropped });
 }
 
 // ── 杯子社交(#74)────────────────────────────────────────────────
@@ -1107,7 +1241,7 @@ async function askRoute(
   const chat: ChatLlm | null = deps.resolveChatLlm ? await deps.resolveChatLlm(cupId) : null;
   if (chat) {
     const user = await resolveSession(
-      { store: deps.accounts!, adminEmail: deps.adminEmail },
+      { store: deps.accounts!, adminEmail: deps.adminEmail, opsEmails: deps.opsEmails, reviewerEmails: deps.reviewerEmails },
       bearerToken(req.headers['authorization']),
     );
     if (!user) return send(res, 401, { error: 'unauthorized' });

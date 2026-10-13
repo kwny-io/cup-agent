@@ -59,6 +59,28 @@ curl http://localhost:8788/cups/cup-A1B2C3/today            # 拉今日概览
 - `--allow-unauth` **显式豁免读+写**(仅本地开发,生产勿用)。
 - 旧 `--read-auth` 占位旗**已退役** —— 读侧改由账号会话 + 归属闸接管。
 
+**角色体系**(`user` / `admin` / `ops` / `reviewer`):注册时按邮箱名单发一次角色
+(`CUP_ADMIN_EMAIL` / `CUP_OPS_EMAILS` / `CUP_REVIEWER_EMAILS`,优先级 admin > ops > reviewer)。
+用于日志回看:读口 admin/ops/reviewer 都能用,**触发保留清理只有 admin/ops**(reviewer 只读)。
+
+## 服务日志回看(落库 + 文件出口)
+
+进程内每请求那行结构化日志,**默认只打控制台,进程一挂就没了**。开持久化后同时落两处:
+
+- **DB**:`server_logs` 表(PG 月分区,保留 90 天)—— 供产品内页面查。
+- **文件**:按行 JSONL(`CUP_LOG_DIR/server-YYYY-MM-DD.log`,UTC 日轮转)—— 供 filebeat/fluentd 之类外部采集器 `tail`。
+
+**写入时脱敏**:落库/落文件**之前**就抹掉敏感值(`Authorization`/`cookie`/`token`/`password`/`claim_code`… 整值替 `[REDACTED]`;`Bearer <t>`/`token=…` 抹值留名;邮箱掩码 `a***@b.com`)。
+同步 sink **只解析入队、不做 I/O**(绝不阻塞热路径),异步循环每秒/按批刷写;管线的任何失败走**裸 stderr**(绝不过 logger,免得 DB 挂了递归自打)。
+
+| 端点 | 角色 | 说明 |
+|---|---|---|
+| `GET /admin/logs` | admin/ops/reviewer | 查一页;`level`(可重复/逗号)/`src`/`q`(msg 字面子串)/`from`/`to`/`limit`(≤500)/`cursor`(keyset 翻页) |
+| `GET /admin/logs/partitions` | admin/ops/reviewer | 各月分区名 + 占用字节(只读) |
+| `POST /admin/logs/retain` | **admin/ops** | 跑一次保留清理,返回删掉的分区名(幂等;删分区不可逆) |
+
+无会话 `401`;有会话但角色不够 `403`。无 PG 时读口回 `200` 空表(服务照常,不报错)。
+
 ## 命令行参数
 
 | 参数 | 默认 | 说明 |
@@ -85,6 +107,10 @@ curl http://localhost:8788/cups/cup-A1B2C3/today            # 拉今日概览
 | `CUP_DATA_DIR` | 数据目录(目标 + 对话轮持久化);缺省 `./.data` |
 | `CUP_PG_URL` | Postgres 连接串;设了则启用 `PgStore` 四件套,缺省仍走内存 |
 | `CUP_TZ` | 日界时区 |
+| `CUP_LOG_DIR` | 服务日志 JSONL 文件出口目录;不设 = 不落文件(有 `CUP_PG_URL` 仍落库) |
+| `CUP_SERVER_LOGS_RETAIN_DAYS` | DB 日志保留天数;缺省 `90` |
+| `CUP_OPS_EMAILS` | ops 邮箱名单(逗号分隔);注册即得 ops 角色 |
+| `CUP_REVIEWER_EMAILS` | reviewer 邮箱名单(逗号分隔);注册即得只读角色 |
 
 ## 数据怎么流(pipeline)
 
@@ -125,14 +151,14 @@ CUP_PG_URL=postgres://… node apps/server/src/cli.ts   # 起服务,自动跑迁
 
 - **迁移**:手写编号 `.sql`(`store/pg/migrations/`),`migrate.ts` 用 `schema_migrations` 表逐个应用,
   每个迁移各在自己的事务里;**无 ORM**。
-- **分区 + 保留策略**:`telemetry`/`events` 按 `ts` 月分区(`ensurePartitions(now, ahead=2)`);
+- **分区 + 保留策略**:`telemetry`/`events`/`server_logs` 按 `ts` 月分区(`ensurePartitions(now, ahead=2)`);
   保留期靠**删整月分区**(不逐行删,十万用户下遥测约 58M 行/天,逐行删跑不动)。`applyRetention`
-  默认遥测 90 天、事件 395 天(约 13 个月),cutoff 所在月**保留**、当前月**永不删**、非 `YYYYMM`
-  形状的分区不碰。**删分区不可逆 → 绝不隐式跑**,须 `--retain` 或 `CUP_RETENTION=1`:
+  默认遥测 90 天、事件 395 天(约 13 个月)、**服务日志 90 天**,cutoff 所在月**保留**、当前月**永不删**、
+  非 `YYYYMM` 形状的分区不碰。**删分区不可逆 → 绝不隐式跑**,须 `--retain` / `CUP_RETENTION=1` / `POST /admin/logs/retain`:
   ```bash
   node apps/server/src/cli.ts --retain             # 跑迁移 + 删过期月分区后即退(定时任务用)
   CUP_RETENTION=1 CUP_PG_URL=… node apps/server/src/cli.ts   # 服务启动时顺带清一次
-  # CUP_TELEMETRY_RETAIN_DAYS / CUP_EVENTS_RETAIN_DAYS 可调天数
+  # CUP_TELEMETRY_RETAIN_DAYS / CUP_EVENTS_RETAIN_DAYS / CUP_SERVER_LOGS_RETAIN_DAYS 可调天数
   ```
 - **隔离纪律**:Pg 契约测试用一次性 schema(`CREATE SCHEMA c<rand>` + 连接串 `options=-c search_path=…`),
   与内存侧的 `mkdtemp` 临时目录同款。

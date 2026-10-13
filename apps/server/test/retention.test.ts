@@ -18,6 +18,7 @@ import {
   dropPartition,
   DEFAULT_TELEMETRY_RETAIN_DAYS,
   DEFAULT_EVENTS_RETAIN_DAYS,
+  DEFAULT_SERVER_LOGS_RETAIN_DAYS,
 } from '@cup/server';
 
 // 2026-10-13T00:00:00Z —— 固定基准,免得"今天"漂移把断言带跑
@@ -70,6 +71,7 @@ test('retainDaysFromEnv:缺省/非法 → 回退默认,不抛', () => {
   const def = DEFAULT_TELEMETRY_RETAIN_DAYS;
   assert.equal(DEFAULT_TELEMETRY_RETAIN_DAYS, 90);
   assert.equal(DEFAULT_EVENTS_RETAIN_DAYS, 395);
+  assert.equal(DEFAULT_SERVER_LOGS_RETAIN_DAYS, 90);
   assert.equal(retainDaysFromEnv('X', def, {}), def);
   assert.equal(retainDaysFromEnv('X', def, { X: '' }), def);
   assert.equal(retainDaysFromEnv('X', def, { X: 'abc' }), def);

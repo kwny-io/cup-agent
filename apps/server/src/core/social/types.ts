@@ -6,7 +6,15 @@
  * 持久化见 accounts.ts(内存 + 文件双实现,照 ChatStore 手法)。
  */
 
-export type Role = 'user' | 'admin';
+/**
+ * 账号角色。
+ *   · `user`     普通用户
+ *   · `admin`    管理员:用户管理 + 投稿审核 + 日志(读+运维)
+ *   · `ops`      运维:日志读 + 触发保留清理/看分区占用(**可动手**)
+ *   · `reviewer` 审核:日志**只读**(查+导出),不能触发清理
+ * 授予口径:注册时按 `CUP_ADMIN_EMAIL` / `CUP_OPS_EMAILS` / `CUP_REVIEWER_EMAILS` 邮箱名单发一次。
+ */
+export type Role = 'user' | 'admin' | 'ops' | 'reviewer';
 export type PackStatus = 'pending' | 'approved' | 'rejected';
 
 export interface Account {

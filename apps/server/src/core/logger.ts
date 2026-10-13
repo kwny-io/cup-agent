@@ -22,6 +22,15 @@ const LEVEL_RANK: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, er
 /** 可序列化的字段值(日志字段是"事实",不是任意对象)。 */
 export type LogFields = Record<string, string | number | boolean | null | undefined>;
 
+/** 一条日志的未序列化形态 —— 脱敏器的输入/输出(脱敏必须在拼行前发生)。 */
+export interface LogEntry {
+  msg: string;
+  fields: LogFields;
+}
+
+/** 脱敏器:在原串上抹掉敏感值。**纯函数**(不改入参、返回新对象),便于单测。 */
+export type Redactor = (entry: LogEntry) => LogEntry;
+
 export interface LoggerOptions {
   /** 最低级别;低于它的丢弃(默认 info) */
   level?: LogLevel;
@@ -33,6 +42,11 @@ export interface LoggerOptions {
   fields?: LogFields;
   /** 源标记(如 `http`/`mqtt`);text 里打 `[源]` 前缀,json 里作 `src` */
   source?: string;
+  /**
+   * 序列化**之前**的脱敏钩子。缺省不脱敏 → 零回归(控制台与既有测试逐字节不变)。
+   * 生产由 `createApp` 在启用持久化时传 `redactFields`,故落库/落文件前敏感值已抹净。
+   */
+  redact?: Redactor;
 }
 
 /**
@@ -64,10 +78,12 @@ function appendFields(msg: string, fields: LogFields | undefined): string {
   return out;
 }
 
-function defaultSink(line: string, level: LogLevel): void {
+/** 默认落点(按级别打到 console 对应通道)。**导出**供 cli/持久 sink 组合成单 sink。 */
+export function consoleSink(line: string, level: LogLevel): void {
   const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
   fn(line);
 }
+const defaultSink = consoleSink;
 
 /** 建一个 logger。child/with 通过闭包叠加字段与源标记。 */
 export function createLogger(opts: LoggerOptions = {}): Logger {
@@ -81,17 +97,20 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     const emit = (l: LogLevel, msg: string, extra?: LogFields): void => {
       if (!isEnabled(l)) return;
       const all = fields ? { ...fields, ...extra } : extra;
+      // 脱敏在拼行之前发生:控制台/落库/落文件三处共用同一份脱敏后的值。
+      const e = opts.redact ? opts.redact({ msg, fields: all ?? {} }) : { msg, fields: all ?? {} };
       let line: string;
       if (format === 'json') {
+        // 保留键(ts/level/src/msg)**最后展开**:fields 里同名键不得覆盖它们。
         line = JSON.stringify({
+          ...e.fields,
           ts: new Date().toISOString(),
           level: l,
           ...(source ? { src: source } : {}),
-          msg,
-          ...(all ?? {}),
+          msg: e.msg,
         });
       } else {
-        line = `${source ? `[${source}] ` : ''}${l.toUpperCase()} ${appendFields(msg, all)}`;
+        line = `${source ? `[${source}] ` : ''}${l.toUpperCase()} ${appendFields(e.msg, e.fields)}`;
       }
       sink(line, l);
     };

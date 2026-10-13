@@ -281,6 +281,7 @@ if (!PG_URL) {
     'users', 'sessions', 'packs', 'subscriptions', 'friends',
     'cup_settings', 'cup_latest', 'daily_agg', 'telemetry', 'events',
     'chat_turns', 'chat_profile', 'cup_traits', 'memory_cards', 'cup_claims', 'cup_llm',
+    'server_logs',
   ].join(', ');
   const fresh = async (): Promise<Store> => {
     await pool.query(`TRUNCATE ${TABLES} RESTART IDENTITY CASCADE`);
@@ -292,7 +293,7 @@ if (!PG_URL) {
       `SELECT tablename FROM pg_tables WHERE schemaname = $1`,
       [schema],
     );
-    assert.ok(t.rows.length >= 15, `期望表数 ≥15,实际 ${t.rows.length}`);
+    assert.ok(t.rows.length >= 16, `期望表数 ≥16,实际 ${t.rows.length}`);
   });
 
   await runStoreContract('Pg', fresh);
@@ -470,7 +471,7 @@ if (!PG_URL) {
       const from = Date.UTC(y, m0, 1);
       const to = Date.UTC(y, m0 + 1, 1);
       const tag = `${y}${String(m0 + 1).padStart(2, '0')}`;
-      for (const t of ['telemetry', 'events']) {
+      for (const t of ['telemetry', 'events', 'server_logs']) {
         await pool.query(
           `CREATE TABLE IF NOT EXISTS ${t}_${tag} PARTITION OF ${t} FOR VALUES FROM (${from}) TO (${to})`,
         );
@@ -479,12 +480,13 @@ if (!PG_URL) {
     const before = await listPartitions(pool, 'telemetry');
     assert.ok(before.includes('telemetry_202501') && before.includes('telemetry_202502'), '老分区已建');
 
-    const dropped = await applyRetention(pool, { telemetryDays: 90, eventsDays: 395, now: Date.now() });
+    const dropped = await applyRetention(pool, { telemetryDays: 90, eventsDays: 395, serverLogsDays: 90, now: Date.now() });
 
-    // 老分区全删（遥测 + 事件各两个）
+    // 老分区全删（遥测 + 事件 + 服务日志各两个）
     for (const tag of ['202501', '202502']) {
       assert.ok(dropped.includes(`telemetry_${tag}`), `telemetry_${tag} 应被删`);
       assert.ok(dropped.includes(`events_${tag}`), `events_${tag} 应被删`);
+      assert.ok(dropped.includes(`server_logs_${tag}`), `server_logs_${tag} 应被删`);
     }
     const after = await listPartitions(pool, 'telemetry');
     assert.ok(!after.includes('telemetry_202501') && !after.includes('telemetry_202502'), '老分区已消失');

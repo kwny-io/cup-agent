@@ -27,6 +27,7 @@ import {
   retainDaysFromEnv,
   DEFAULT_TELEMETRY_RETAIN_DAYS,
   DEFAULT_EVENTS_RETAIN_DAYS,
+  DEFAULT_SERVER_LOGS_RETAIN_DAYS,
   type RetentionOptions,
 } from './store/pg/migrate.ts';
 import { createLogger, parseLogLevel, parseLogFormat, type LogLevel } from './core/logger.ts';
@@ -50,6 +51,8 @@ interface Args {
   logLevel: LogLevel;
   /** 日志格式:text(默认) / json;--log-format / CUP_LOG_FORMAT */
   logFormat: 'text' | 'json';
+  /** 持久化日志的 JSONL 文件出口目录;CUP_LOG_DIR,不设 = 不落文件 */
+  logDir: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -67,6 +70,7 @@ function parseArgs(argv: string[]): Args {
     tz: process.env.CUP_TZ ?? null,
     logLevel: parseLogLevel(process.env.CUP_LOG_LEVEL),
     logFormat: parseLogFormat(process.env.CUP_LOG_FORMAT),
+    logDir: process.env.CUP_LOG_DIR ?? null,
   };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -174,6 +178,15 @@ function parseArgs(argv: string[]): Args {
         console.log('  --log-level <debug|info|warn|error>  最低级别(默认 info);或 CUP_LOG_LEVEL。');
         console.log('  --log-format <text|json>             输出格式(默认 text);或 CUP_LOG_FORMAT=json。');
         console.log('');
+        console.log('服务日志落库 / 外部采集(供 admin/ops/reviewer 回看;写入时脱敏):');
+        console.log('  CUP_LOG_DIR=<目录>   结构化日志按行落 JSONL(server-YYYY-MM-DD.log);不设 = 不落文件。');
+        console.log('                       filebeat/fluentd 等采集器可直接 tail;有 CUP_PG_URL 时同时落 server_logs 表。');
+        console.log('  --quiet              控制台静音,**不影响落库/落文件**(安静跑但仍可回看)。');
+        console.log('  CUP_OPS_EMAILS=<邮箱,逗号分隔>       该邮箱注册即得运维(日志读 + 触发保留清理)。');
+        console.log('  CUP_REVIEWER_EMAILS=<邮箱,逗号分隔>  该邮箱注册即得审核(日志只读:查 + 导出)。');
+        console.log('  看/查: GET /admin/logs?level=&src=&q=&from=&to=&limit=&cursor=(须 admin/ops/reviewer)');
+        console.log('         GET /admin/logs/partitions(分区占用)· POST /admin/logs/retain(清过期分区,不可逆)');
+        console.log('');
         console.log('Postgres 存储 / 保留策略(第 5 阶段;仅在 CUP_PG_URL 存在时):');
         console.log('  CUP_PG_URL=postgres://…  选了它才走 PG(启动前自动迁移);不设 → 内存/文件。');
         console.log('  --migrate               跑完迁移即退(部署用)。');
@@ -181,6 +194,7 @@ function parseArgs(argv: string[]): Args {
         console.log('  CUP_RETENTION=1         服务启动时顺带清一次过期分区。');
         console.log('  CUP_TELEMETRY_RETAIN_DAYS=<n>  遥测保留天数(默认 90)。');
         console.log('  CUP_EVENTS_RETAIN_DAYS=<n>     事件保留天数(默认 395,约 13 个月)。');
+        console.log('  CUP_SERVER_LOGS_RETAIN_DAYS=<n> 服务日志保留天数(默认 90)。');
         console.log('  保留策略按**整月分区**删(不逐行删);cutoff 所在月保留、当前月永不删。');
         process.exit(0);
     }
@@ -202,6 +216,7 @@ function retentionOptions(): RetentionOptions {
   return {
     telemetryDays: retainDaysFromEnv('CUP_TELEMETRY_RETAIN_DAYS', DEFAULT_TELEMETRY_RETAIN_DAYS),
     eventsDays: retainDaysFromEnv('CUP_EVENTS_RETAIN_DAYS', DEFAULT_EVENTS_RETAIN_DAYS),
+    serverLogsDays: retainDaysFromEnv('CUP_SERVER_LOGS_RETAIN_DAYS', DEFAULT_SERVER_LOGS_RETAIN_DAYS),
   };
 }
 
@@ -214,10 +229,18 @@ function makeChatLlm(): ChatLlm {
   return new FetchChatLlm({ apiKey: key, model, url });
 }
 
+/** 逗号分隔的邮箱名单(去空、去重前的原样);未设/空 → undefined(不授予该角色)。 */
+function emailList(raw: string | undefined): readonly string[] | undefined {
+  if (!raw) return undefined;
+  const list = raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  return list.length > 0 ? list : undefined;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  // 结构化日志:--quiet 直接静音(级别拉到 error 之上不可行,故用 sink 丢弃);否则按
-  // --log-level/--log-format 打。级别/格式也透传给 createApp,让内部默认 logger 一致。
+  // **引导 logger**:只用于 createApp 之前的消息(迁移/启动自检)。持久化日志管线由
+  // createApp 内部拥有(见 app.ts)—— 故这里**不**把 log 传给它,否则会走"注入 log"分支、
+  // 绕过落库/落文件。--quiet 在此处也静音引导消息。
   const log = args.quiet
     ? () => {}
     : createLogger({ level: args.logLevel, format: args.logFormat });
@@ -306,9 +329,10 @@ async function main(): Promise<void> {
     simUrl: args.simUrl ?? undefined,
     mqttUrl: args.mqttUrl ?? undefined,
     mqttClientId: process.env.CUP_MQTT_CLIENT_ID,
-    log,
     logLevel: args.logLevel,
     logFormat: args.logFormat,
+    logDir: args.logDir,
+    logQuiet: args.quiet,
     llm,
     chatLlm,
     dataDir,
@@ -319,6 +343,9 @@ async function main(): Promise<void> {
     apiKey,
     allowUnauth: args.allowUnauth,
     adminEmail: process.env.CUP_ADMIN_EMAIL,
+    opsEmails: emailList(process.env.CUP_OPS_EMAILS),
+    reviewerEmails: emailList(process.env.CUP_REVIEWER_EMAILS),
+    retention: retentionOptions(),
     requireClaim: args.requireClaim,
   });
   const port = await app.listen(args.port);
@@ -341,6 +368,14 @@ async function main(): Promise<void> {
   );
   console.log(`  数据目录: ${dataDir}(目标 + 对话记忆持久化)`);
   console.log(`  日界时区: ${getDayTimeZone() ?? '(服务器本地时区;--tz/CUP_TZ 可设,如 Asia/Shanghai)'}`);
+  {
+    // 持久日志出口:文件(CUP_LOG_DIR)+ DB(有 PG 即落 server_logs)。两者皆无 = 只打控制台。
+    const filePart = args.logDir ?? '关';
+    const dbPart = pgUrl ? 'on' : 'off(无 CUP_PG_URL)';
+    console.log(
+      `  持久日志: 文件=${filePart} · DB=${dbPart}${args.quiet ? ' · 控制台静音(--quiet,持久化照常)' : ''}(看/查:GET /admin/logs)`,
+    );
+  }
   if (args.allowUnauth) {
     console.log('  端点鉴权: 关(--allow-unauth 显式豁免,仅本地开发;生产勿用)');
   } else if (app.apiKeyGenerated) {
@@ -357,7 +392,7 @@ async function main(): Promise<void> {
     const opt = retentionOptions();
     const onBoot = process.env.CUP_RETENTION === '1' || process.env.CUP_RETENTION === 'true';
     console.log(
-      `  保留策略: 遥测 ${opt.telemetryDays} 天 / 事件 ${opt.eventsDays} 天(${onBoot ? '启动时清;' : ''}--retain 可手动清过期月分区)`,
+      `  保留策略: 遥测 ${opt.telemetryDays} 天 / 事件 ${opt.eventsDays} 天 / 服务日志 ${opt.serverLogsDays} 天(${onBoot ? '启动时清;' : ''}--retain 可手动清过期月分区)`,
     );
   }
   console.log(

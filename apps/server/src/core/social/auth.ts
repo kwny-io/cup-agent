@@ -11,7 +11,7 @@ import {
   newUserId,
   verifyPassword,
 } from './crypto.ts';
-import { normalizeEmail, toPublicUser, type Account, type AccountsStore, type PublicUser } from './types.ts';
+import { normalizeEmail, toPublicUser, type Account, type AccountsStore, type PublicUser, type Role } from './types.ts';
 
 export interface RegisterInput {
   email: string;
@@ -39,7 +39,22 @@ export interface AuthDeps {
   store: AccountsStore;
   /** 首个管理员引导:注册邮箱等于它 → role='admin'(不新增注册口子) */
   adminEmail?: string;
+  /** 运维名单:注册邮箱命中 → role='ops'(日志读 + 触发清理) */
+  opsEmails?: readonly string[];
+  /** 审核名单:注册邮箱命中 → role='reviewer'(日志只读) */
+  reviewerEmails?: readonly string[];
   now?: () => number;
+}
+
+/**
+ * 按邮箱名单定角色(注册时发一次)。**优先级 admin > ops > reviewer > user**。
+ * 名单命中即发对应角色;全部落空 → `user`。纯函数,便于单测。
+ */
+export function resolveRole(email: string, deps: Pick<AuthDeps, 'adminEmail' | 'opsEmails' | 'reviewerEmails'>): Role {
+  if (deps.adminEmail && email === normalizeEmail(deps.adminEmail)) return 'admin';
+  if (deps.opsEmails?.some((e) => normalizeEmail(e) === email)) return 'ops';
+  if (deps.reviewerEmails?.some((e) => normalizeEmail(e) === email)) return 'reviewer';
+  return 'user';
 }
 
 /**
@@ -63,14 +78,13 @@ export async function register(deps: AuthDeps, input: RegisterInput): Promise<Au
 
   const now = deps.now?.() ?? Date.now();
   const { salt, hash } = hashPassword(password);
-  const adminEmail = deps.adminEmail ? normalizeEmail(deps.adminEmail) : '';
   const account: Account = {
     user_id: newUserId(),
     email,
     nickname: nickname || email.split('@')[0] || '杯子主人',
     salt,
     hash,
-    role: adminEmail && email === adminEmail ? 'admin' : 'user',
+    role: resolveRole(email, deps),
     created_at: now,
   };
   await deps.store.createAccount(account);

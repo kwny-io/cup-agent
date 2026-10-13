@@ -72,7 +72,7 @@ export async function migrate(pool: Pool): Promise<string[]> {
 }
 
 /** 分区表名(按月滚动建)。 */
-const PARTITIONED = ['telemetry', 'events'] as const;
+const PARTITIONED = ['telemetry', 'events', 'server_logs'] as const;
 
 /** `Date.UTC(y, m, 1)` —— 某月 1 号 00:00 UTC 的 ms(分区边界;分区按 UTC 月切,与日界时区无关)。 */
 function monthStartMs(year: number, month0: number): number {
@@ -146,12 +146,16 @@ export async function dropPartition(pool: Pool, table: string, tag: string): Pro
 export const DEFAULT_TELEMETRY_RETAIN_DAYS = 90;
 /** 事件默认保留天数(约 13 个月,跨年可查)。 */
 export const DEFAULT_EVENTS_RETAIN_DAYS = 395;
+/** 服务日志默认保留天数(90 天;与遥测同口径 —— 运维/审核回看够用)。 */
+export const DEFAULT_SERVER_LOGS_RETAIN_DAYS = 90;
 
 export interface RetentionOptions {
   /** 遥测保留天数(默认 90;cli 读 `CUP_TELEMETRY_RETAIN_DAYS`)。 */
   telemetryDays?: number;
   /** 事件保留天数(默认 395;cli 读 `CUP_EVENTS_RETAIN_DAYS`)。 */
   eventsDays?: number;
+  /** 服务日志保留天数(默认 90;cli 读 `CUP_SERVER_LOGS_RETAIN_DAYS`)。 */
+  serverLogsDays?: number;
   /** 基准时刻(默认当前;测试注入用)。 */
   now?: number;
 }
@@ -207,6 +211,7 @@ export async function applyRetention(
   const days: Record<(typeof PARTITIONED)[number], number> = {
     telemetry: opts.telemetryDays ?? DEFAULT_TELEMETRY_RETAIN_DAYS,
     events: opts.eventsDays ?? DEFAULT_EVENTS_RETAIN_DAYS,
+    server_logs: opts.serverLogsDays ?? DEFAULT_SERVER_LOGS_RETAIN_DAYS,
   };
   const dropped: string[] = [];
   for (const table of PARTITIONED) {
