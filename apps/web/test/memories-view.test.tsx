@@ -85,10 +85,12 @@ test('MemoriesCard:无卡 → 空态 + 封存今天按钮', async () => {
 
 test('MemoriesCard:有卡 → 概览 + 时间线(标题/数值/事件/线索)', async () => {
   const today = localDayKey();
+  // 昨天由 today 推出,不写死 —— 写死会在真实时间翻页后变成"一起第 3 天"(日期脆性)
+  const yesterday = localDayKey(new Date(Date.now() - 86_400_000));
   const soc = fakeSocial({
     getMemory: async () => [
       card(today, { reached: true, streak: 3 }),
-      card('2026-10-13', { notable_events: [{ type: 'shake', ts: 1 }], body_cues: [{ cue: 'hurt', evidence: 'shake@1' }], turns_summary: '主人问过「早」' }),
+      card(yesterday, { notable_events: [{ type: 'shake', ts: 1 }], body_cues: [{ cue: 'hurt', evidence: 'shake@1' }], turns_summary: '主人问过「早」' }),
     ],
   });
   const { host, unmount } = mount(createElement(MemoriesCard, { social: soc, enabled: true }));

@@ -97,7 +97,7 @@ test('GetStartedCard:退场标记已在 → 直接不渲染', () => {
   unmount();
 });
 
-test('GetStartedCard:未连上 → connect 步,无按钮', () => {
+test('GetStartedCard:未连上 → connect 步(无主 CTA,但"以后再说"能退场)', () => {
   reset();
   const { host, unmount } = mount(
     createElement(GetStartedCard, {
@@ -108,6 +108,13 @@ test('GetStartedCard:未连上 → connect 步,无按钮', () => {
     }),
   );
   assert.match(host.textContent ?? '', /正在认识你的杯子/);
-  assert.equal(host.querySelector('button'), null, 'connect 步不给按钮');
+  // connect 步没有主 CTA(连接是后台在做),但**必须**有退场口 ——
+  // 否则数据源连不上时这张卡永久占屏、关不掉。
+  assert.equal(btnByText(host, '去看杯子'), null, 'connect 步无主 CTA');
+  const skip = btnByText(host, '以后再说');
+  assert.ok(skip, 'connect 步也要有"以后再说"');
+  click(skip!);
+  assert.equal(host.querySelector('section'), null, '点后退场');
+  assert.equal(localStorage.getItem(LS_KEY), '1');
   unmount();
 });

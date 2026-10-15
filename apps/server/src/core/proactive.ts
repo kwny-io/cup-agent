@@ -1,11 +1,13 @@
 /**
  * 主动开口(P5)—— 杯子在特定时机自己找话说。
  *
- * 触发条件(全部满足才开口):
- *   1. 本地时间在下午 14–18 点(该喝水的窗口)
- *   2. 今天喝得不足目标一半(`drank_ml < 0.5 * goal`)
- *   3. 距上次主动开口 ≥ 2 小时(冷却)
- *   4. 今天至少有一条事件(没数据的杯子不硬找话)
+ * **"时机"判定已抽成纯函数 `proactive-timing.ts`**(优先级 3):本调度器只负责取输入、
+ * 喂进 `decideSpeak`、按结果执行,不再自己持有硬规则。模型那边要满足的关键条件是:
+ *   1. 本地时间在该喝水的窗口(`SPEAK_HOUR_FROM..TO`)
+ *   2. 今天喝得不足目标一半
+ *   3. 今天至少有一条事件(没数据的杯子不硬找话)
+ *   4. **自适应冷却**:基准 2h,连着被无视每次 +1h(封顶 6h),被回应即回基准
+ *   5. **不打扰让位**:用户刚在说话(3min 内)/ 刚喝过(30min 内)都不插嘴
  *
  * 冷却怎么记:**读对话记忆里最后一条 role:'proactive',不另开状态** ——
  * 于是"重启存活"是免费的:FileChatStore 把 proactive 轮也落盘了,重启后冷却仍在。
@@ -185,8 +187,8 @@ export class ProactiveScheduler {
       lastDrinkTs: await this.lastDrinkTsToday(cupId, nowMs),
     });
     if (!decision.speak) {
-      // 只记"够格但被不打扰挡下"的情形,避免刷屏(out-of-window/not-thirsty 是常态,不记)
-      if (decision.reason === 'user-just-spoke' || decision.reason === 'just-drank' || decision.reason === 'cooldown' || decision.reason === 'backoff-elapsed') {
+      // 只记"够格但被让位挡下"的情形,避免刷屏(out-of-window/not-thirsty/no-data 是常态,不记)
+      if (decision.reason === 'user-just-spoke' || decision.reason === 'just-drank' || decision.reason === 'cooldown') {
         this.deps.log(`主动开口让位[${cupId}]: ${decision.reason}`, 'info');
       }
       return false;

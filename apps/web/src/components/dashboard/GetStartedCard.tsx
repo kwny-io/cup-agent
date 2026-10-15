@@ -44,17 +44,21 @@ export function GetStartedCard({
           <h2 className="text-base font-semibold text-cup-deep">{view.title}</h2>
           <p className="mt-1 text-sm text-cup-ink-soft">{view.body}</p>
         </div>
-        {view.cta && (
+        {view.step !== null && (
           <div className="flex items-center gap-2">
-            <Button
-              onClick={() => {
-                // coach 步的"知道了"=退场;此前各步的主 CTA 是去杯子看它
-                if (view.step === 'coach') dismiss();
-                else onGoCup();
-              }}
-            >
-              {view.cta}
-            </Button>
+            {/* 主 CTA:coach 步的"知道了"=退场;其余各步是去杯子看它 */}
+            {view.cta && (
+              <Button
+                onClick={() => {
+                  if (view.step === 'coach') dismiss();
+                  else onGoCup();
+                }}
+              >
+                {view.cta}
+              </Button>
+            )}
+            {/* 退场口:非 coach 步都给(含 connect 步 —— 主 CTA 为空时它是唯一出口,
+                否则数据源连不上时这张卡会永久占屏、关不掉) */}
             {view.step !== 'coach' && (
               <Button tone="ghost" onClick={dismiss}>
                 以后再说

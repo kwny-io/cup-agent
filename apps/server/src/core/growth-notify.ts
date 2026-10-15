@@ -17,12 +17,10 @@
 import type { Command } from '@cup/contract';
 import type { CupEvent } from '@cup/contract';
 import { DEFAULT_DEVICE_TARGET, type CommandQueue } from './commands.ts';
-import { deriveGrowth } from './growth.ts';
+import { deriveGrowth, GROWTH_DAYS } from './growth.ts';
 import { dayKey } from './day-boundary.ts';
 import type { LogLevel } from './logger.ts';
 
-/** 庆祝窗口 —— 与 http.ts 的 GROWTH_DAYS 同口径(够覆盖最深里程碑) */
-const GROWTH_DAYS = 730;
 const CELEBRATE_TTL_MS = 6 * 3_600_000;
 /** 已庆祝去重表上限(简单游标,够用;超出清一半) */
 const SEEN_MAX = 4096;

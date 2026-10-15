@@ -69,7 +69,7 @@ import { LOG_PAGE_MAX, type LogQuery, type ServerLogStore } from '../core/log-st
 import { applyRetention, listPartitions, type RetentionOptions } from '../store/pg/migrate.ts';
 import { query, type Pool } from '../store/pg/pool.ts';
 import { computePersonality, traitRecord } from '../core/personality.ts';
-import { deriveGrowth } from '../core/growth.ts';
+import { deriveGrowth, GROWTH_DAYS } from '../core/growth.ts';
 import { closeDayCard } from '../core/memory-cards.ts';
 
 /** 用户提问的长度上限(超了直接 400,别灌进提示词) */
@@ -998,13 +998,6 @@ async function personalityHistoryRoute(
   const timeline = dispositionTimeline(recent);
   send(res, 200, { cup_id: cupId, days: timeline, count: timeline.length });
 }
-
-/**
- * 成长快照的天数上限 —— 「一起第 N 天 / 满月 / 一年」要看全程,故窗口取得比性格(7)长得多。
- * 两年有界(730),仍走 `recentAggs` 单次区间查询(它按天查表,两年不重);**不新增 store 方法**。
- * 与 memory 的 366 一样是"足够长但有界",免得无界回溯。
- */
-const GROWTH_DAYS = 730;
 
 /**
  * 成长快照(养成闭环,优先级 1)—— `GET /cups/:id/growth`(纯读,无 LLM,无落盘)。

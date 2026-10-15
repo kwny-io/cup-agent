@@ -9,7 +9,7 @@
  * 用户看不到任何**跨天的成长反馈**。这层补的正是这个可见闭环:阶段在升、里程碑在解锁。
  *
  * 与 /report、/profile 的关系:那些是**当下状态**;这层是**随时间累积的进度**,
- * 天然要更长的窗口(见 http.ts 的 GROWTH_DAYS)。
+ * 天然要更长的窗口(见下方 `GROWTH_DAYS`,本文件即其单一真源)。
  */
 import type { DailyAgg } from './types.ts';
 
@@ -30,6 +30,15 @@ export const STAGES: GrowthStage[] = [
   { key: 'companion', name: '老友', min_days: 100 },
   { key: 'legend', name: '传奇', min_days: 365 },
 ];
+
+/**
+ * 成长窗口的天数上限 —— 「一起第 N 天 / 满月 / 一年」要看全程,故比性格窗口(7 天)长得多。
+ * 两年有界(730),仍走 `recentAggs` 单次区间查询(按天查表,两年不重);**不新增 store 方法**。
+ *
+ * **单一真源**:http.ts 的 `/growth` 与 growth-notify.ts 的庆祝判定都从这里取 ——
+ * 免得两处各写一个 730,改一处忘另一处,变成"显示已升阶、庆祝却不触发"的静默错位。
+ */
+export const GROWTH_DAYS = 730;
 
 /** 里程碑的种类 —— 每种对应一个可数的量(见 `statsOf`) */
 export type MilestoneKind = 'together' | 'streak' | 'achieved' | 'refill';
@@ -99,7 +108,7 @@ function reached(d: DailyAgg): boolean {
 
 /**
  * 从窗口(旧→新)数出四个量。
- * `days_together` 依赖窗口覆盖到最早的活动日 —— 调用方取足够长的窗口(见 GROWTH_DAYS)。
+ * `days_together` 依赖窗口覆盖到最早的活动日 —— 调用方取足够长的窗口(见 `GROWTH_DAYS`)。
  */
 export function statsOf(recent: DailyAgg[]): GrowthStats {
   let firstActive = -1;

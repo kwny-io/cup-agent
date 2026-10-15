@@ -34,7 +34,7 @@ export interface OnboardingView {
   step: OnboardingStep | null;
   title: string;
   body: string;
-  /** 主按钮文案;null = 无按钮(纯说明) */
+  /** 主按钮文案;null = 无主按钮(如 connect 步 —— 但组件仍会给"以后再说"退场口) */
   cta: string | null;
 }
 
