@@ -1,13 +1,16 @@
 /**
- * 人格市场卡(#73 UGC)—— 浏览已上架包 + 投稿 + 订阅。
+ * 人格市场卡(#73 UGC)—— 浏览已上架包 + 投稿 + 订阅 + **装到我的杯子**(P4.2)。
  *
  * 安全口径(与后端 normalizePack / lib/pack-apply.ts 呼应):
  *   · 远端包**只带数值 + 文本,不执行代码**;
  *   · 展示前先过 sanitizePack(前端那道) —— 越界值钳到语义区间、未知键丢弃、长文本截断;
  *   · 投稿草稿发后端前先过 sanitizeDraft(预检,后端仍会把关)。
  *
- * 投稿要登录(后端写端点要会话);未登录时只读浏览。
- * 真实 click 提交(铁律)。
+ * 「订了」≠「穿着」:订阅是**账号级**(我订了 5 个包);「装到我的杯子」是**杯级**
+ * (我这只杯此刻穿哪件,一只杯一件)—— 后者走 `PUT /cups/:id/pack`(会话 + 归属)。
+ * 装了才真的改手感(渲染回路读的就是它);不装 → 出厂体质。
+ *
+ * 投稿 / 装包都要登录(后端走会话);未登录时只读浏览。真实 click 提交(铁律)。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, TextArea, TextField } from '../ui.tsx';
@@ -19,22 +22,30 @@ export function MarketCard({
   social,
   enabled,
   user,
+  /** 装/卸包后回调(App 侧 +1 触发 useActivePack 重取,徽标即时跟进) */
+  onPackChanged,
 }: {
   social: SocialApi | null;
   enabled: boolean;
   user: PublicUser | null;
+  onPackChanged?: () => void;
 }) {
   const [packs, setPacks] = useState<PersonaPack[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [subscribed, setSubscribed] = useState<Set<string>>(new Set());
+  /** 我这只杯当前穿的那件(未登录 / 未装 → null) */
+  const [activeId, setActiveId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     if (!social) return;
     const list = await social.listPacks();
     setPacks(list.map(sanitizePack));
-    // 登录后回读「我订过哪些」——卡片加载即正确显示已订阅(不是点过才算)。
-    const mine = user ? await social.listSubscriptions() : [];
+    // 登录后回读「我订过哪些」+「我那只杯穿着哪件」——卡片加载即正确显示(不是点过才算)。
+    const [mine, active] = user
+      ? await Promise.all([social.listSubscriptions(), social.getActivePack()])
+      : [[], null];
     setSubscribed(new Set(mine));
+    setActiveId(active?.pack_id ?? null);
     setLoaded(true);
   }, [social, user]);
 
@@ -58,6 +69,25 @@ export function MarketCard({
     if (ok) setSubscribed((prev) => new Set(prev).add(packId));
   }
 
+  /** 把包装到我这只杯(杯级生效)。成功 → 记下生效 id + 通知 App 重取(徽标跟进)。 */
+  async function install(packId: string): Promise<void> {
+    if (!social) return;
+    const out = await social.setActivePack(packId);
+    if (out) {
+      setActiveId(out.pack_id);
+      onPackChanged?.();
+    }
+  }
+
+  /** 卸下当前包 → 回出厂体质。 */
+  async function uninstall(): Promise<void> {
+    if (!social) return;
+    if (await social.clearActivePack()) {
+      setActiveId(null);
+      onPackChanged?.();
+    }
+  }
+
   return (
     <Card title="人格市场" hint={`${packs.length} 个已上架`}>
       <div className="flex flex-col gap-3">
@@ -72,7 +102,11 @@ export function MarketCard({
                 key={p.pack_id}
                 pack={p}
                 subscribed={subscribed.has(p.pack_id)}
+                active={activeId === p.pack_id}
+                canInstall={user !== null}
                 onSubscribe={() => void subscribe(p.pack_id)}
+                onInstall={() => void install(p.pack_id)}
+                onUninstall={() => void uninstall()}
               />
             ))}
           </ul>
@@ -93,11 +127,19 @@ export function MarketCard({
 function PackRow({
   pack,
   subscribed,
+  active,
+  canInstall,
   onSubscribe,
+  onInstall,
+  onUninstall,
 }: {
   pack: PersonaPack;
   subscribed: boolean;
+  active: boolean;
+  canInstall: boolean;
   onSubscribe: () => void;
+  onInstall: () => void;
+  onUninstall: () => void;
 }) {
   const th = describeThresholds(pack.thresholds);
   const wv = describeWave(pack.wave);
@@ -108,9 +150,22 @@ function PackRow({
           <div className="truncate text-sm font-medium text-cup-ink">{pack.name}</div>
           {pack.tone && <div className="truncate text-xs text-cup-ink-soft">语气:{pack.tone}</div>}
         </div>
-        <Button tone={subscribed ? 'ghost' : 'deep'} disabled={subscribed} onClick={onSubscribe}>
-          {subscribed ? '已订阅' : '订阅'}
-        </Button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button tone={subscribed ? 'ghost' : 'deep'} disabled={subscribed} onClick={onSubscribe}>
+            {subscribed ? '已订阅' : '订阅'}
+          </Button>
+          {/* 装到我的杯子(杯级生效):未登录不显示 —— 这动作要会话 + 这只杯归属 */}
+          {canInstall &&
+            (active ? (
+              <Button tone="ghost" onClick={onUninstall}>
+                已穿上 · 卸下
+              </Button>
+            ) : (
+              <Button tone="deep" onClick={onInstall}>
+                装到我的杯子
+              </Button>
+            ))}
+        </div>
       </div>
       {(th.length > 0 || wv.length > 0) && (
         <div className="mt-2 flex flex-wrap gap-1">

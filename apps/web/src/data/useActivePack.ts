@@ -1,11 +1,10 @@
 /**
- * 当前生效的人格包(P4.2 接线 B 的"取包"这半)——
- * 从 `?pack=<pack_id>` 深链解析出**这只杯现在穿哪件**,交渲染回路。
+ * 当前生效的人格包(P4.2)——“这只杯现在穿哪件”,交渲染回路。
  *
- * 为什么先用深链而非服务端:
- *   · 服务端的"当前生效包"(`GET /cups/:id/pack`)要落库 —— 存储归 B lane(设计稿 §5);
- *   · 深链是**纯前端**的观察口:不落库、可分享、刷新即还原,先让"包真的改变手感"
- *     肉眼可见(里程碑 P4.1 的判据),等 B 落库后把这里的来源换成服务端即可(一处改)。
+ * 两个来源,优先级:
+ *   1. `?pack=<pack_id>` 深链 —— **显式预览**动作(不想装、只想看手感):解析后优先。
+ *   2. 服务端 `GET /cups/:id/pack` —— **真源**:账号给自己那只杯装的生效包(落库)。
+ *      深链缺省 / 指了个不存在的包时,回落到这里;都没有 → null(= 出厂体质)。
  *
  * 包到手**先过 `sanitizePack`**(前端那道语义钳制),与 MarketCard 同口径 ——
  * 远端包只带数值 + 文本,喂渲染前必须夹一次。
@@ -15,27 +14,42 @@ import { sanitizePack } from '../lib/pack-apply.ts';
 import type { PersonaPack, SocialApi } from './source.ts';
 
 /**
- * 解析 `?pack=<id>` 指定的包;无参 / 未登录 / 找不到 / 未上架 → null(= 出厂体质)。
- * 只认**已上架**的包(listPacks 只回 approved),与"可订阅"同一可见性口径。
+ * 解析当前生效包:显式 `?pack=<id>` 深链(预览)优先,否则用服务端生效包。
+ * 都没有 / 未登录 / 找不到 → null(= 出厂体质,渲染逐帧与今天一致)。
  */
-export function useActivePack(social: SocialApi | null, search = location.search): PersonaPack | null {
+export function useActivePack(
+  social: SocialApi | null,
+  search = location.search,
+  /** 装/卸包后 +1 触发重取(市场里点「装到我的杯子」→ 徽标即时跟进,不用刷新) */
+  refreshKey = 0,
+): PersonaPack | null {
   const [pack, setPack] = useState<PersonaPack | null>(null);
   useEffect(() => {
-    const id = new URLSearchParams(search).get('pack');
-    if (!social || !id) {
+    if (!social) {
       setPack(null);
       return;
     }
     let alive = true;
     void (async () => {
-      const list = await social.listPacks();
+      // 1) 显式深链 ?pack=<id>:预览动作,解析得到就优先(不装包也能改手感)。
+      const id = new URLSearchParams(search).get('pack');
+      if (id) {
+        const list = await social.listPacks();
+        if (!alive) return;
+        const found = list.find((p) => p.pack_id === id);
+        if (found) {
+          setPack(sanitizePack(found));
+          return;
+        }
+      }
+      // 2) 服务端"当前生效包"(账号给自己那只杯装的)—— P4.2 真源。
+      const active = await social.getActivePack();
       if (!alive) return;
-      const found = list.find((p) => p.pack_id === id);
-      setPack(found ? sanitizePack(found) : null);
+      setPack(active ? sanitizePack(active) : null);
     })();
     return () => {
       alive = false;
     };
-  }, [social, search]);
+  }, [social, search, refreshKey]);
   return pack;
 }

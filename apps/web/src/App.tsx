@@ -107,8 +107,10 @@ export function App() {
   const [chatUnread, setChatUnread] = useState(false);
   // 长期性格底色:后端战报给;模拟器/mock 无战报 → normal
   const disposition = report?.disposition ?? 'normal';
-  // 当前生效人格包(P4.2):`?pack=<id>` 深链解析;无参 → null(出厂体质)
-  const pack = useActivePack(social);
+  // 当前生效人格包(P4.2):`?pack=<id>` 深链解析 / 服务端生效包;都没有 → null(出厂体质)。
+  // packRefresh:市场里装/卸包后 +1 → 重取,徽标与渲染回路即时跟进(不用刷新)。
+  const [packRefresh, setPackRefresh] = useState(0);
+  const pack = useActivePack(social, undefined, packRefresh);
 
   // 主动插话到、而用户没在对话 tab/宽屏看板(那儿直接看得到)→ chat tab 亮未读点
   const proactiveCount = proactive.length;
@@ -196,7 +198,11 @@ export function App() {
         {tab === 'memory' ? (
           <MemoriesView social={social} session={session} />
         ) : tab === 'community' ? (
-          <CommunityView social={social} session={session} />
+          <CommunityView
+            social={social}
+            session={session}
+            onPackChanged={() => setPackRefresh((n) => n + 1)}
+          />
         ) : tab === 'logs' && social && canReadLogs(session.user?.role) ? (
           <LogsView social={social} role={session.user!.role} />
         ) : tab === 'admin' && social && canManage(session.user?.role) ? (

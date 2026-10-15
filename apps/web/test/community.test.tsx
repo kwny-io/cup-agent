@@ -68,6 +68,9 @@ function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
     submitPack: async (): Promise<PersonaPack | null> => null,
     subscribePack: async () => true,
     listSubscriptions: async () => [],
+    getActivePack: async (): Promise<PersonaPack | null> => null,
+    setActivePack: async (): Promise<PersonaPack | null> => null,
+    clearActivePack: async () => true,
     adminListUsers: async () => [],
     adminSetDisabled: async () => null,
     adminListPacks: async () => [],
@@ -473,6 +476,55 @@ test('MarketCard:真实点击「订阅」调 subscribePack', async () => {
   await flush();
   assert.deepEqual(seen, ['p1']);
   assert.ok(findButton(host, '已订阅'), '订阅后按钮变已订阅');
+  unmount();
+});
+
+test('MarketCard:真实点击「装到我的杯子」调 setActivePack(杯级生效)', async () => {
+  const seen: string[] = [];
+  const PACK: PersonaPack = {
+    pack_id: 'p1', author_user_id: 'u2', name: '温柔包', tone: '', thresholds: {}, wave: {}, lines: [], status: 'approved', created_at: 1,
+  };
+  let notified = 0;
+  const soc = fakeSocial({
+    listPacks: async (): Promise<PersonaPack[]> => [PACK],
+    setActivePack: async (id) => {
+      seen.push(id);
+      return PACK;
+    },
+  });
+  const { host, unmount } = mount(
+    createElement(MarketCard, { social: soc, enabled: true, user: USER, onPackChanged: () => { notified++; } }),
+  );
+  await flush();
+  click(findButton(host, '装到我的杯子')!);
+  await flush();
+  assert.deepEqual(seen, ['p1'], 'setActivePack 收到该包 id');
+  assert.ok(findButton(host, '卸下'), '装上后按钮变「已穿上 · 卸下」');
+  assert.equal(notified, 1, '装包后通知 App 重取(徽标跟进)');
+  unmount();
+});
+
+test('MarketCard:已装 → 显示「卸下」;真实点击调 clearActivePack', async () => {
+  const PACK: PersonaPack = {
+    pack_id: 'p1', author_user_id: 'u2', name: '温柔包', tone: '', thresholds: {}, wave: {}, lines: [], status: 'approved', created_at: 1,
+  };
+  let cleared = 0;
+  const soc = fakeSocial({
+    listPacks: async (): Promise<PersonaPack[]> => [PACK],
+    getActivePack: async (): Promise<PersonaPack | null> => PACK, // 这只杯已穿这件
+    clearActivePack: async () => {
+      cleared++;
+      return true;
+    },
+  });
+  const { host, unmount } = mount(createElement(MarketCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  assert.ok(findButton(host, '卸下'), '回读已装 → 显示卸下,不是「装到我的杯子」');
+  assert.equal(findButton(host, '装到我的杯子'), undefined);
+  click(findButton(host, '卸下')!);
+  await flush();
+  assert.equal(cleared, 1);
+  assert.ok(findButton(host, '装到我的杯子'), '卸下后回到可装');
   unmount();
 });
 

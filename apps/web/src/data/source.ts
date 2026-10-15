@@ -619,6 +619,15 @@ export interface SocialApi {
   /** 我订过的包 id 列表(只回已上架的);失败 → []。用于市场卡片标「已订阅」。 */
   listSubscriptions(): Promise<string[]>;
 
+  // ── 杯子当前生效包(P4.2)—— 走**账号会话 + 归属**(同 /llm),不走设备 x-api-key
+  //    「订了」≠「穿着」:订阅是账号级,生效是杯级(一只杯穿一件)。
+  /** 我这只杯现在穿的人格包(全文);没装 / 未登录 / 无此口 → null(= 出厂体质)。 */
+  getActivePack(): Promise<PersonaPack | null>;
+  /** 把某个已上架包装到这只杯;成功 → 包全文,失败 → null。 */
+  setActivePack(packId: string): Promise<PersonaPack | null>;
+  /** 卸下当前包 → 回默认体质;成功 → true。 */
+  clearActivePack(): Promise<boolean>;
+
   // ── 管理后台(#73)──
   adminListUsers(): Promise<AdminUser[]>;
   adminSetDisabled(userId: string, disabled: boolean): Promise<AdminUser | null>;

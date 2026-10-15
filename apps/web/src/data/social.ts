@@ -331,6 +331,28 @@ export class CloudSocial implements SocialApi {
     return Array.isArray(d?.pack_ids) ? d.pack_ids : [];
   }
 
+  // ── 杯子当前生效包(P4.2;会话 + 归属,同 /llm)─────────────────
+
+  async getActivePack(): Promise<PersonaPack | null> {
+    const r = await this.req('GET', `/cups/${encodeURIComponent(this.cupId)}/pack`);
+    if (!r.ok) return null;
+    const d = r.data as { pack?: PersonaPack | null };
+    return d?.pack ?? null;
+  }
+
+  async setActivePack(packId: string): Promise<PersonaPack | null> {
+    const r = await this.req('PUT', `/cups/${encodeURIComponent(this.cupId)}/pack`, {
+      pack_id: packId,
+    });
+    if (!r.ok) return null;
+    return (r.data as { pack?: PersonaPack | null }).pack ?? null;
+  }
+
+  async clearActivePack(): Promise<boolean> {
+    const r = await this.req('DELETE', `/cups/${encodeURIComponent(this.cupId)}/pack`);
+    return r.ok;
+  }
+
   // ── 管理后台(#73)─────────────────────────────────────────────
 
   async adminListUsers(): Promise<AdminUser[]> {

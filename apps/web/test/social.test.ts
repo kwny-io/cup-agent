@@ -171,6 +171,40 @@ test('getProfile / saveProfile:命中 /cups/:id/profile,PUT 带 nickname 体', a
   assert.equal(put?.body, JSON.stringify({ nickname: '新名' }));
 });
 
+test('getActivePack / setActivePack / clearActivePack:命中 /cups/:id/pack(GET/PUT/DELETE)', async () => {
+  const cap: Cap[] = [];
+  const PACK = { pack_id: 'p-1', name: '温柔早八', tone: 'x', thresholds: {}, wave: {}, lines: [], status: 'approved' };
+  const impl = router(
+    [
+      { match: (u, m) => u.includes('/cups/cup-X/pack') && m === 'GET', json: { pack: PACK } },
+      { match: (u, m) => u.includes('/cups/cup-X/pack') && m === 'PUT', json: { pack: PACK } },
+      { match: (u, m) => u.includes('/cups/cup-X/pack') && m === 'DELETE', json: { pack: null } },
+    ],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+
+  const got = await s.getActivePack();
+  assert.equal(got?.pack_id, 'p-1', 'GET 解出 pack 全文');
+  const put = await s.setActivePack('p-1');
+  assert.equal(put?.pack_id, 'p-1');
+  const putReq = cap.find((c) => c.method === 'PUT');
+  assert.equal(putReq?.url, `${BASE}/cups/cup-X/pack`);
+  assert.equal(putReq?.body, JSON.stringify({ pack_id: 'p-1' }), 'PUT 体是 {pack_id}');
+  assert.equal(await s.clearActivePack(), true, 'DELETE → true');
+  assert.equal(cap.find((c) => c.method === 'DELETE')?.url, `${BASE}/cups/cup-X/pack`);
+});
+
+test('getActivePack:未装 / 失败 → null(不 reject);setActivePack:失败 → null', async () => {
+  const impl = router([
+    { match: (u, m) => u.includes('/cups/cup-X/pack') && m === 'GET', json: { pack: null } },
+    { match: (u, m) => u.includes('/cups/cup-X/pack') && m === 'PUT', status: 503, json: { error: '未启用' } },
+  ]);
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.equal(await s.getActivePack(), null, '未装 → null');
+  assert.equal(await s.setActivePack('p-1'), null, '503 → null');
+});
+
 test('submitPack:失败 → null(不让半截包进 UI)', async () => {
   const impl = router([{ match: (u) => u.includes('/market/packs'), status: 400, json: { error: '包名不能为空' } }]);
   const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });

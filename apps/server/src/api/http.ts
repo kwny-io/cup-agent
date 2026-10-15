@@ -47,6 +47,7 @@ import { runChat, type ChatDeps } from '../core/chat/agent.ts';
 import { NullChatLlm } from '../core/chat/mock.ts';
 import type { ChatLlm } from '../core/chat/types.ts';
 import { isCupLlmProvider, type CupLlmService } from '../core/cup-llm.ts';
+import type { CupActivePackStore } from '../core/active-pack.ts';
 import { MemoryChatStore, type ChatStore } from '../core/chat/memory.ts';
 import { ingestEnvelope } from '../ingest/http-adapter.ts';
 import { MemoryAccountsStore } from '../core/social/accounts.ts';
@@ -117,6 +118,11 @@ export interface ApiDeps {
   claims?: ClaimService;
   /** 每杯模型配置(BYOK);给了则 `/ask` 用该杯自己的模型,并开放 `/cups/:id/llm` 读写口 */
   cupLlm?: CupLlmService;
+  /**
+   * 每杯当前生效的人格包(存储见 core/active-pack.ts);给了则开放 `/cups/:id/pack` 读写口。
+   * 不给 → 该口回 503(不装死,也不静默丢配置)。包全文仍从 `accounts.packById` 取。
+   */
+  activePack?: CupActivePackStore;
   /**
    * 绑定杯子须出示一次性 claim code(默认 false → 只校验 cup_id 形状,与旧行为一致)。
    * 设备/模拟器两半验收后由用户开。
@@ -244,7 +250,7 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
     return await accountDeleteRoute(req, res, deps);
   }
 
-  const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|growth|profile|memory|llm)$/);
+  const m = path.match(/^\/cups\/([^/]+)\/(today|series|events|state|goal|config|ask|ingest|report\/latest|report\/history|personality\/history|growth|profile|memory|llm|pack)$/);
   if (!m) {
     send(res, 404, { error: 'not found', path });
     return;
@@ -255,6 +261,9 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
 
   // `/llm` = 用户给"自己那只杯"配模型(BYOK)→ 走**账号会话**闸(同 /social/*),不走设备 x-api-key。
   if (action === 'llm') return await cupLlmRoute(req, res, deps, cupId);
+
+  // `/pack` = 用户给"自己那只杯"换当前生效人格包(P4.2)→ 同 `/llm` 走**会话 + 归属**闸。
+  if (action === 'pack') return await cupPackRoute(req, res, deps, cupId);
 
   // `DELETE /memory` = 用户删"自己那只杯"的记忆(第 4 阶段三档删除)→ 同 `/llm` 走**账号会话**闸
   // (会话 + 归属),**不走设备 x-api-key** —— 共享的 x-api-key 不足以证明"你是这只杯的主人"。
@@ -1401,6 +1410,57 @@ async function cupLlmRoute(
   const input = baseUrl !== undefined ? { provider, model, base_url: baseUrl, key } : { provider, model, key };
   const cfg = await svc.set(cupId, input);
   send(res, 200, { cup_id: cupId, config: cfg });
+}
+
+/**
+ * 当前生效人格包(P4.2)—— `GET/PUT/DELETE /cups/:id/pack`。
+ *
+ * 与 `/llm` 同类:这是**账号行为**(给自己那只杯换人格包),故走**会话闸 + 归属**,
+ * 不走设备 x-api-key。出口恒为**包全文**(前端渲染要 thresholds/wave;没装 → `pack: null`),
+ * 与设计稿 §2.4 A 一致:「回当前生效的包全文」。
+ *
+ * 存储是 `CupActivePackStore`(per-CUP,只存 `cup_id → pack_id` 关系,见 core/active-pack.ts);
+ * 包全文从 `deps.accounts.packById` 取。**装了才生效**:PUT 只落杯级那一行,不写回 per-user
+ * 的 `subscriptions`(订阅 ≠ 生效)。未配该 store → 503(不装死,也不静默丢配置)。
+ */
+async function cupPackRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  cupId: string,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
+  if (!me) return;
+  if (!(await guardCupOwner(res, deps, cupId, me.user_id))) return;
+  const store = deps.activePack;
+  if (!store) return send(res, 503, { error: '本实例未启用杯子人格包切换' });
+  const method = req.method ?? 'GET';
+
+  if (method === 'GET') {
+    const id = await store.get(cupId);
+    const pack = id ? await deps.accounts?.packById(id) : null;
+    // 包被下架/删掉 → 视同没装(别把悬垂 id 的包回给前端)
+    return send(res, 200, { pack: pack && pack.status === 'approved' ? pack : null });
+  }
+
+  if (method === 'DELETE') {
+    await store.clear(cupId);
+    return send(res, 200, { pack: null });
+  }
+
+  if (method !== 'PUT') return send(res, 405, { error: 'use GET, PUT or DELETE' });
+
+  const body = await readJson(req);
+  const packId = (body as { pack_id?: unknown }).pack_id;
+  if (typeof packId !== 'string' || packId.trim().length === 0) {
+    return send(res, 400, { error: '缺 pack_id' });
+  }
+  const pack = await deps.accounts?.packById(packId.trim());
+  if (!pack || pack.status !== 'approved') {
+    return send(res, 404, { error: '包不存在或未上架' });
+  }
+  await store.set(cupId, pack.pack_id);
+  send(res, 200, { pack });
 }
 
 /**

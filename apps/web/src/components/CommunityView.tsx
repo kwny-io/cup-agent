@@ -15,7 +15,16 @@ import { FriendsCard } from './dashboard/FriendsCard.tsx';
 import type { Session } from '../data/useSession.ts';
 import type { SocialApi } from '../data/source.ts';
 
-export function CommunityView({ social, session }: { social: SocialApi | null; session: Session }) {
+export function CommunityView({
+  social,
+  session,
+  onPackChanged,
+}: {
+  social: SocialApi | null;
+  session: Session;
+  /** 装/卸人格包后回调(App 上提,触发当前生效包重取 —— 徽标 / 渲染回路即时跟进) */
+  onPackChanged?: () => void;
+}) {
   const enabled = social !== null;
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
@@ -23,7 +32,7 @@ export function CommunityView({ social, session }: { social: SocialApi | null; s
       <BindCard social={social} enabled={enabled} user={session.user} />
       <ProfileCard social={social} enabled={enabled} />
       <LlmCard social={social} enabled={enabled} user={session.user} />
-      <MarketCard social={social} enabled={enabled} user={session.user} />
+      <MarketCard social={social} enabled={enabled} user={session.user} onPackChanged={onPackChanged} />
       <FriendsCard social={social} enabled={enabled} user={session.user} />
     </div>
   );
