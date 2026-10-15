@@ -13,6 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp, normalizePack, makePack } from '@cup/server';
+import { MemoryAccountsStore, seedOfficialPacks, OFFICIAL_PACKS } from '@cup/server';
 import type { AdminUser, PersonaPack, PublicUser } from '@cup/server';
 
 interface AuthOk {
@@ -275,6 +276,99 @@ test('admin:*:非管理员一律 403(审核也一样)', async () => {
     const pleb = await reg(base, { email: 'joe@x.com', password: 'pw123456' });
     assert.equal((await get(base, '/admin/packs', pleb.token)).status, 403);
     assert.equal((await post(base, '/admin/packs/x/approve', {}, pleb.token)).status, 403);
+  } finally {
+    await app.close();
+  }
+});
+
+// ── 官方种子包(P4-D3 冷启动)─────────────────────────────────────
+
+test('seedOfficialPacks:种入 5 个官方包,全 approved;重跑幂等不再种', async () => {
+  const store = new MemoryAccountsStore();
+  const first = await seedOfficialPacks(store, 1000);
+  assert.equal(first, OFFICIAL_PACKS.length, '首次全种');
+  assert.equal(first, 5);
+
+  const packs = await store.listPacks('approved');
+  assert.equal(packs.length, 5, '5 个都上架');
+  for (const p of packs) {
+    assert.equal(p.author_user_id, 'official', '作者是官方哨兵');
+    assert.equal(p.status, 'approved', '不走审核队列');
+    assert.equal(p.created_at, 1000);
+  }
+  assert.deepEqual(
+    packs.map((p) => p.pack_id).sort(),
+    OFFICIAL_PACKS.map((s) => s.id).sort(),
+    'pack_id 稳定可断言',
+  );
+
+  const again = await seedOfficialPacks(store, 2000);
+  assert.equal(again, 0, '幂等:第二次不种');
+  assert.equal((await store.listPacks('approved')).length, 5, '数量不变');
+});
+
+test('市场:种子包在真启动的 app 里可见且可订阅', async () => {
+  const { app, base } = await startApp();
+  try {
+    // cli 才种子,测试里手动种(createApp 同步、且数包断言要求市场默认为空)
+    const added = await seedOfficialPacks(app.accounts, Date.now());
+    assert.equal(added, 5);
+
+    const u = await reg(base, { email: 'a@x.com', password: 'pw123456' });
+    const { packs } = (await (await get(base, '/market/packs', u.token)).json()) as {
+      packs: PersonaPack[];
+    };
+    assert.equal(packs.length, 5, '官方包在架');
+
+    const r = await post(base, '/market/packs/official-hothead/subscribe', {}, u.token);
+    assert.equal(r.status, 200, '官方包可订阅');
+  } finally {
+    await app.close();
+  }
+});
+
+// ── 订阅读回(P4-D1 装包生效的前置)────────────────────────────────
+
+test('market/subscriptions:未登录 401;登录回已订的包', async () => {
+  const { app, base } = await startApp();
+  try {
+    await seedOfficialPacks(app.accounts, Date.now());
+    assert.equal((await get(base, '/market/subscriptions')).status, 401, '未登录');
+
+    const u = await reg(base, { email: 'a@x.com', password: 'pw123456' });
+    let r = await get(base, '/market/subscriptions', u.token);
+    assert.equal(r.status, 200);
+    assert.deepEqual(((await r.json()) as { pack_ids: string[] }).pack_ids, [], '没订过 → 空');
+
+    await post(base, '/market/packs/official-genki/subscribe', {}, u.token);
+    await post(base, '/market/packs/official-aloof/subscribe', {}, u.token);
+    r = await get(base, '/market/subscriptions', u.token);
+    const ids = ((await r.json()) as { pack_ids: string[] }).pack_ids;
+    assert.deepEqual(ids.sort(), ['official-aloof', 'official-genki'], '回读两件');
+  } finally {
+    await app.close();
+  }
+});
+
+test('market/subscriptions:订过的包被下架后,读回不再列表(不返回死 id)', async () => {
+  const { app, base } = await startApp({ adminEmail: 'boss@x.com' });
+  try {
+    const admin = await reg(base, { email: 'boss@x.com', password: 'pw123456' });
+    const u = await reg(base, { email: 'a@x.com', password: 'pw123456' });
+
+    const { pack } = (await (
+      await post(base, '/market/packs', DRAFT, admin.token)
+    ).json()) as { pack: PersonaPack };
+    await post(base, `/admin/packs/${pack.pack_id}/approve`, {}, admin.token);
+    await post(base, `/market/packs/${pack.pack_id}/subscribe`, {}, u.token);
+
+    let r = await get(base, '/market/subscriptions', u.token);
+    assert.deepEqual(((await r.json()) as { pack_ids: string[] }).pack_ids, [pack.pack_id]);
+
+    // 驳回下架后,订阅记录还在,但读口不再返回它
+    await post(base, `/admin/packs/${pack.pack_id}/reject`, {}, admin.token);
+    r = await get(base, '/market/subscriptions', u.token);
+    assert.deepEqual(((await r.json()) as { pack_ids: string[] }).pack_ids, [], '下架包不返回');
   } finally {
     await app.close();
   }

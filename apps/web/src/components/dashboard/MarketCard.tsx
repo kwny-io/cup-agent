@@ -26,14 +26,17 @@ export function MarketCard({
 }) {
   const [packs, setPacks] = useState<PersonaPack[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [subscribed, setSubscribed] = useState<string | null>(null);
+  const [subscribed, setSubscribed] = useState<Set<string>>(new Set());
 
   const reload = useCallback(async () => {
     if (!social) return;
     const list = await social.listPacks();
     setPacks(list.map(sanitizePack));
+    // 登录后回读「我订过哪些」——卡片加载即正确显示已订阅(不是点过才算)。
+    const mine = user ? await social.listSubscriptions() : [];
+    setSubscribed(new Set(mine));
     setLoaded(true);
-  }, [social]);
+  }, [social, user]);
 
   useEffect(() => {
     void reload();
@@ -52,7 +55,7 @@ export function MarketCard({
   async function subscribe(packId: string): Promise<void> {
     if (!social) return;
     const ok = await social.subscribePack(packId);
-    if (ok) setSubscribed(packId);
+    if (ok) setSubscribed((prev) => new Set(prev).add(packId));
   }
 
   return (
@@ -68,7 +71,7 @@ export function MarketCard({
               <PackRow
                 key={p.pack_id}
                 pack={p}
-                subscribed={subscribed === p.pack_id}
+                subscribed={subscribed.has(p.pack_id)}
                 onSubscribe={() => void subscribe(p.pack_id)}
               />
             ))}

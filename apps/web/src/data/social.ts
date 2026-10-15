@@ -324,6 +324,13 @@ export class CloudSocial implements SocialApi {
     return r.ok;
   }
 
+  async listSubscriptions(): Promise<string[]> {
+    const r = await this.req('GET', '/market/subscriptions');
+    if (!r.ok) return [];
+    const d = r.data as { pack_ids?: string[] };
+    return Array.isArray(d?.pack_ids) ? d.pack_ids : [];
+  }
+
   // ── 管理后台(#73)─────────────────────────────────────────────
 
   async adminListUsers(): Promise<AdminUser[]> {

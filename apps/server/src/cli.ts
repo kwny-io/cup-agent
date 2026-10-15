@@ -31,6 +31,7 @@ import {
   type RetentionOptions,
 } from './store/pg/migrate.ts';
 import { createLogger, parseLogLevel, parseLogFormat, type LogLevel } from './core/logger.ts';
+import { seedOfficialPacks } from './core/social/official-packs.ts';
 
 interface Args {
   port: number;
@@ -164,6 +165,7 @@ function parseArgs(argv: string[]): Args {
         console.log('  GET|PUT /cups/:id/profile       人格档案(昵称 + 派生性格快照;#72)');
         console.log('  GET|POST /market/packs          浏览已上架 / 投稿人格包(#73)');
         console.log('  POST /market/packs/:id/subscribe 订阅已上架包');
+        console.log('  GET /market/subscriptions       我订过的包(只回已上架的)');
         console.log('  GET /admin/users · POST /admin/users/:id/disable · GET /admin/packs?status= ·');
         console.log('    POST /admin/packs/:id/(approve|reject)  管理后台(须 role=admin)');
         console.log('  GET|POST /social/friends        好友列表 / 按邮箱加好友(#74)');
@@ -348,6 +350,12 @@ async function main(): Promise<void> {
     retention: retentionOptions(),
     requireClaim: args.requireClaim,
   });
+
+  // 官方人格包种子(P4-D3 冷启动):幂等,已存在则跳过。放这里而非 createApp 内 ——
+  // createApp 是同步的、且测试里数包数(市场空着是断言前提),种子只该在真启动时跑。
+  const seeded = await seedOfficialPacks(app.accounts, Date.now());
+  if (seeded) log(`人格市场种子:新种入 ${seeded} 个官方包`);
+
   const port = await app.listen(args.port);
 
   console.log('─'.repeat(64));

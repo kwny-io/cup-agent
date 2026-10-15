@@ -67,6 +67,7 @@ function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
     listPacks: async () => [],
     submitPack: async (): Promise<PersonaPack | null> => null,
     subscribePack: async () => true,
+    listSubscriptions: async () => [],
     adminListUsers: async () => [],
     adminSetDisabled: async () => null,
     adminListPacks: async () => [],

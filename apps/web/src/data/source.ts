@@ -616,6 +616,8 @@ export interface SocialApi {
   listPacks(): Promise<PersonaPack[]>;
   submitPack(draft: PackDraft): Promise<PersonaPack | null>;
   subscribePack(packId: string): Promise<boolean>;
+  /** 我订过的包 id 列表(只回已上架的);失败 → []。用于市场卡片标「已订阅」。 */
+  listSubscriptions(): Promise<string[]>;
 
   // ── 管理后台(#73)──
   adminListUsers(): Promise<AdminUser[]>;

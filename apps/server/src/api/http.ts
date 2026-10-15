@@ -195,6 +195,9 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
   if (path === '/market/packs') {
     return await marketPacksRoute(req, res, deps, url);
   }
+  if (path === '/market/subscriptions') {
+    return await marketSubscriptionsRoute(req, res, deps);
+  }
   const sub = path.match(/^\/market\/packs\/([^/]+)\/subscribe$/);
   if (sub) {
     return await marketSubscribeRoute(req, res, deps, decodeURIComponent(sub[1]!));
@@ -492,6 +495,30 @@ async function marketSubscribeRoute(
   }
   await deps.accounts!.subscribe(user.user_id, packId);
   send(res, 200, { subscribed: true, pack_id: packId });
+}
+
+/**
+ * GET /market/subscriptions → 200 { pack_ids: string[] }(当前登录用户订过的包;需登录)
+ *
+ * 只回 **已上架** 的包 —— 若订过的包后来被下架/驳回,订阅记录留着但不再生效,不返回,
+ * 省得前端拿一个不存在的包去装。灭订阅记录不在此口(留待 v0 之后)。
+ */
+async function marketSubscriptionsRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<void> {
+  const user = await guardUser(req, res, deps);
+  if (!user) return;
+  if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'use GET' });
+
+  const ids = await deps.accounts!.subscriptions(user.user_id);
+  const live: string[] = [];
+  for (const id of ids) {
+    const pack = await deps.accounts!.packById(id);
+    if (pack && pack.status === 'approved') live.push(id);
+  }
+  send(res, 200, { pack_ids: live });
 }
 
 // ── 管理后台(#73 审核;用户管理)───────────────────────────────────

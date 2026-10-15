@@ -165,6 +165,11 @@ export {
 } from './core/social/packs.ts';
 export { teamStreak, type TeamStreakResult } from './core/social/streak.ts';
 export {
+  OFFICIAL_PACKS,
+  OFFICIAL_AUTHOR,
+  seedOfficialPacks,
+} from './core/social/official-packs.ts';
+export {
   ClaimService,
   normalizeClaim,
   hashClaim,
