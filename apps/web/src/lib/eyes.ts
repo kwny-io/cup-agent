@@ -134,6 +134,22 @@ const WEAK_BLINK_COUNT = 3;
 /** 一轮三次眨完后的静息(秒),过后再起一轮 —— 免得虚弱的杯子从此僵住(眨眼是"活着"的第一要素) */
 const WEAK_CYCLE_REST_S = 6;
 
+/**
+ * 眼睛阈值(P4.2 人格包注入口,浏览器预览侧)。
+ *
+ * 注:v0 人格包只作用于**浏览器里的渲染回路**(屏幕卡通杯 + 盖脸预览),
+ * 不下行到真机 —— 把包推给硬件脸要新契约 + 固件(设计稿 §5)。这里注的是
+ * 预览用的 `Eyes` 实例,故**不碰契约**。
+ * **默认 = 今天的常量**,不装包逐帧一致。
+ */
+export interface EyeParams {
+  /** 喝一口满足持续时长(秒) */
+  contentS: number;
+}
+
+/** 默认眼睛阈值 —— 与今天的常量逐字相同 */
+export const DEFAULT_EYE_PARAMS: EyeParams = { contentS: CONTENT_S };
+
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
@@ -179,6 +195,8 @@ export class Eyes {
   /** 手势语法 §5.1 #1:一次性强制表情(压过本地物理之外的一切,但不越交接) */
   private exprState: EyeState | null = null;
   private exprT = 0;
+  /** 表情阈值(P4.2)—— 装机包时由调用方注入;缺省 = 今天的常量 */
+  private p: EyeParams = DEFAULT_EYE_PARAMS;
   /** 最近计算的姿态(供 getter) */
   private pose: EyePose = idlePose();
 
@@ -190,9 +208,14 @@ export class Eyes {
     return this.pose;
   }
 
+  /** 注入表情阈值(P4.2 人格包);传 `DEFAULT_EYE_PARAMS` 即回出厂 */
+  setParams(p: EyeParams): void {
+    this.p = p;
+  }
+
   /** 外部事件:喝了一口(契约 drink 事件 / 水位掉档),喂一次 */
   noteDrink(): void {
-    this.contentT = CONTENT_S;
+    this.contentT = this.p.contentS;
   }
 
   /** 外部事件:受惊(契约 shake / 冲击)。通常由 step 的 motion 边沿自动触发,这是手动口 */

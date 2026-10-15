@@ -12,6 +12,7 @@ import { CloudSource } from './data/cloud.ts';
 import { useCupData } from './data/useCupData.ts';
 import { useChat } from './data/useChat.ts';
 import { useSession } from './data/useSession.ts';
+import { useActivePack } from './data/useActivePack.ts';
 import { currentStateLabel } from './data/simulator.ts';
 import type { DataSource, PublicUser } from './data/source.ts';
 import { Dashboard } from './components/BoardView.tsx';
@@ -106,6 +107,8 @@ export function App() {
   const [chatUnread, setChatUnread] = useState(false);
   // 长期性格底色:后端战报给;模拟器/mock 无战报 → normal
   const disposition = report?.disposition ?? 'normal';
+  // 当前生效人格包(P4.2):`?pack=<id>` 深链解析;无参 → null(出厂体质)
+  const pack = useActivePack(social);
 
   // 主动插话到、而用户没在对话 tab/宽屏看板(那儿直接看得到)→ chat tab 亮未读点
   const proactiveCount = proactive.length;
@@ -145,17 +148,28 @@ export function App() {
             </nav>
           )}
         </div>
-        <span
-          className="flex items-center gap-1.5 text-xs text-cup-ink-soft"
-          title={`数据源:${state}`}
-        >
-          <i
-            className={`inline-block h-2 w-2 rounded-full ${
-              state === 'open' ? 'bg-cup-aqua' : 'bg-cup-warm'
-            }`}
-          />
-          {currentStateLabel(state)}
-        </span>
+        <div className="flex items-center gap-3">
+          {/* 当前生效人格包(P4.2):装了才显示,没装 = 出厂体质 → 这格不出现(零视觉回归) */}
+          {pack && (
+            <span
+              className="rounded-full bg-cup-foam px-2 py-0.5 text-xs font-medium text-cup-deep"
+              title={`当前人格包:${pack.name}(${pack.pack_id})`}
+            >
+              🎭 {pack.name}
+            </span>
+          )}
+          <span
+            className="flex items-center gap-1.5 text-xs text-cup-ink-soft"
+            title={`数据源:${state}`}
+          >
+            <i
+              className={`inline-block h-2 w-2 rounded-full ${
+                state === 'open' ? 'bg-cup-aqua' : 'bg-cup-warm'
+              }`}
+            />
+            {currentStateLabel(state)}
+          </span>
+        </div>
       </header>
 
       {/* 断线/出错:不再只靠顶部小圆点,给一条显眼的横幅(仍零依赖) */}
@@ -203,6 +217,7 @@ export function App() {
             chat={chat}
             showChat
             disposition={disposition}
+            pack={pack}
           />
         ) : tab === 'cup' ? (
           <div className="grid h-full place-items-center p-6">
@@ -211,6 +226,7 @@ export function App() {
               base={frame?.base}
               size={260}
               disposition={disposition}
+              pack={pack}
             />
           </div>
         ) : tab === 'chat' ? (
@@ -231,6 +247,7 @@ export function App() {
             goal={goal}
             setGoal={setGoal}
             disposition={disposition}
+            pack={pack}
             onGoCup={() => setTab('cup')}
           />
         )}
@@ -238,7 +255,7 @@ export function App() {
 
       {/* 宽屏:悬浮杯。窄屏杯子 Tab 里已有,这里不显示 */}
       {wide && showCup && (
-        <FloatingCup lid={frame?.lid} base={frame?.base} disposition={disposition} />
+        <FloatingCup lid={frame?.lid} base={frame?.base} disposition={disposition} pack={pack} />
       )}
 
       {/* 窄屏底部 Tab;宽屏用一个小开关控制悬浮杯显隐 */}

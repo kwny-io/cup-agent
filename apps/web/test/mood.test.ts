@@ -3,7 +3,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CupMood } from '../src/lib/mood.ts';
+import { CupMood, DEFAULT_MOOD_PARAMS } from '../src/lib/mood.ts';
 
 const DT = 1 / 120;
 
@@ -110,4 +110,35 @@ test('长期性格:低水位持续仍会蔫,与底色无关', () => {
   m.setDisposition('smug'); // 底色得意
   run(m, 8, false, 0.2); // 但水位一直低 → 物理性"被怠慢"更优先
   assert.equal(m.current, 'sulk');
+});
+
+// ── P4.2 人格包注入口(setParams)────────────────────────────────
+
+test('注入口:把 REFUSE_S 拉长 → 摇杯起手皱眉更久,再勉强接受', () => {
+  const m = new CupMood();
+  m.setParams({ refuseS: 2, smugS: 4, sulkLevel: 0.28 });
+  run(m, 1.5, true, 0.5); // 出厂 0.45s 早该转 give 了;这里拉长到 2s 还在皱眉
+  assert.equal(m.current, 'refuse');
+  run(m, 1.0, true, 0.5); // 越过 2s 才勉强接受
+  assert.equal(m.current, 'give');
+});
+
+test('注入口:把 SULK_LEVEL 抬高 → 水位没低到那条线就不算被怠慢', () => {
+  const m = new CupMood();
+  m.setParams({ refuseS: 0.45, smugS: 4, sulkLevel: 0.8 }); // 要很空(低于 0.8)才蔫
+  run(m, 8, false, 0.6); // 0.6 < 0.8 → 仍低于线 → 蔫
+  assert.equal(m.current, 'sulk');
+  const m2 = new CupMood();
+  m2.setParams({ refuseS: 0.45, smugS: 4, sulkLevel: 0.5 }); // 线降到 0.5
+  run(m2, 8, false, 0.6); // 0.6 > 0.5 → 不算被怠慢
+  assert.equal(m2.current, 'idle');
+});
+
+test('注入口:默认参数 = 出厂体质(不装包时逐帧不变)', () => {
+  const a = new CupMood();
+  const b = new CupMood();
+  b.setParams(DEFAULT_MOOD_PARAMS);
+  run(a, 1.0, true, 0.5);
+  run(b, 1.0, true, 0.5);
+  assert.equal(a.current, b.current);
 });

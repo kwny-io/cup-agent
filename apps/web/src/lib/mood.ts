@@ -46,6 +46,33 @@ const SIP_DEBOUNCE_S = 1.2;
 const SIP_WINDOW_S = 30;
 const SIP_COUNT = 2;
 
+/**
+ * 心情阈值(P4.2 人格包注入口)。
+ *
+ * 这几个量是**长期体质**(摇杯多久皱眉、得意多久、多低才蔫)——
+ * 人格包管的就是它们,与后端"当前情绪"(disposition)分工不重叠(设计稿 §2.2)。
+ * **默认值 = 上面那几个常量** —— 不装包时逐帧与今天一致(可回归)。
+ *
+ * 键集**正好对齐** `PACK_THRESHOLD_KEYS` 里前端这侧消费得动的三个
+ * (`REFUSE_S` / `SMUG_S` / `SULK_LEVEL`)。其余包键(`CONTENT_S`/`IDLE_S`/`SULK_STREAK`)
+ * 前端暂不消费 —— `SULK_LOW_S`(秒)与 `SULK_STREAK`(天)语义不同,不做错配映射。
+ */
+export interface MoodParams {
+  /** 摇杯起手皱眉时长(秒) */
+  refuseS: number;
+  /** 得意持续时长(秒) */
+  smugS: number;
+  /** 低于此水位才可能蔫(0..1) */
+  sulkLevel: number;
+}
+
+/** 默认心情阈值 —— 与今天的常量逐字相同 */
+export const DEFAULT_MOOD_PARAMS: MoodParams = {
+  refuseS: REFUSE_S,
+  smugS: SMUG_S,
+  sulkLevel: SULK_LEVEL,
+};
+
 export class CupMood {
   private mood: Mood = 'idle';
   /** 当前心情已持续(秒) */
@@ -62,6 +89,8 @@ export class CupMood {
   private disposition: Disposition = 'normal';
   /** 当前这次得意是"喝出来"的瞬时得意(有时候限),还是长期底色(常驻、随话随变) */
   private smugFromSip = false;
+  /** 心情阈值(P4.2)—— 装机包时由调用方注入;缺省 = 今天的常量 */
+  private p: MoodParams = DEFAULT_MOOD_PARAMS;
 
   get current(): Mood {
     return this.mood;
@@ -70,6 +99,14 @@ export class CupMood {
   /** 由战报/快照喂入长期性格;normal 即"无底色",不改变表现 */
   setDisposition(d: Disposition): void {
     this.disposition = d;
+  }
+
+  /**
+   * 注入心情阈值(P4.2 人格包)。调用方每次可安全覆写;传 `DEFAULT_MOOD_PARAMS`
+   * 即回到出厂体质。留接口而非构造参数 —— 包可能中途换/卸。
+   */
+  setParams(p: MoodParams): void {
+    this.p = p;
   }
 
   /**
@@ -90,21 +127,21 @@ export class CupMood {
         this.set('refuse');
       }
       this.shakeT += dt;
-      if (this.shakeT >= REFUSE_S) this.set('give');
+      if (this.shakeT >= this.p.refuseS) this.set('give');
       this.lowT = 0;
       return;
     }
     this.wasShaking = false;
 
     // 2) 久置低水位 → 蔫(闹别扭)
-    this.lowT = level01 < SULK_LEVEL ? this.lowT + dt : 0;
+    this.lowT = level01 < this.p.sulkLevel ? this.lowT + dt : 0;
     if (this.lowT >= SULK_LOW_S) {
       this.setInternal('sulk');
       return;
     }
 
     // 3) 喝出来的得意有时限,到点自己收；长期底色的得意则常驻
-    if (this.mood === 'smug' && this.smugFromSip && this.moodT < SMUG_S) return;
+    if (this.mood === 'smug' && this.smugFromSip && this.moodT < this.p.smugS) return;
 
     // 4) 无事发生 → 长期性格接管底色(蔫/得意),normal 则回到 idle
     this.setInternal(PASSTHROUGH_MOOD[this.disposition]);

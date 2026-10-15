@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Eyes, type EyeInputs } from '../src/lib/eyes.ts';
+import { Eyes, DEFAULT_EYE_PARAMS, type EyeInputs } from '../src/lib/eyes.ts';
 import { renderEyeGrid, litCount, EYE_W, EYE_H } from '../src/lib/eye-render.ts';
 
 const DT = 1 / 120;
@@ -318,4 +318,32 @@ test('交接回盖子:眼睑**逐渐睁开**(反向同样平滑)', () => {
   assert.ok(e.currentPose.openness > 0 && e.currentPose.openness < 1, '应处于睁眼中途');
   run(e, 0.6, inp({ owner: 'lid' }));
   assert.ok(e.currentPose.openness > 0.98, '应已睁回');
+});
+
+// ── P4.2 人格包注入口(setParams)────────────────────────────────
+
+test('注入口:CONTENT_S 拉长 → "满足"表情更久才自收', () => {
+  // 出厂 3.5s;包里给 8s → noteDrink 后 5s 仍应 content
+  const e = new Eyes();
+  e.setParams({ contentS: 8 });
+  e.noteDrink();
+  run(e, 5, inp()); // 越过出厂 3.5s
+  assert.equal(e.current, 'content');
+
+  // 对照:出厂参数下同样过 5s 早该散
+  const d = new Eyes();
+  d.noteDrink();
+  run(d, 5, inp());
+  assert.notEqual(d.current, 'content');
+});
+
+test('注入口:默认参数 = 出厂体质(不装包时行为一致)', () => {
+  const a = new Eyes();
+  const b = new Eyes();
+  b.setParams(DEFAULT_EYE_PARAMS);
+  a.noteDrink();
+  b.noteDrink();
+  run(a, 2, inp());
+  run(b, 2, inp());
+  assert.equal(a.current, b.current);
 });

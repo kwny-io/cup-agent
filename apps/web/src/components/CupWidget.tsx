@@ -19,6 +19,8 @@ import { SHAKE_DRIVE_AMP, SHAKE_HZ, WaterWave, FIXED_DT } from '../lib/water.ts'
 import { clamp01, lerp, mix, tempColor, type TempColor } from '../lib/color.ts';
 import { dejectedness, dulled, soberBubbleCount, WATER_DULL_MAX } from '../lib/sulk.ts';
 import { CupMood, type Disposition, type Mood } from '../lib/mood.ts';
+import { packRenderParams, type PackRenderParams } from '../lib/pack-render.ts';
+import type { PersonaPack } from '../data/source.ts';
 import type { BaseTelemetry, LidTelemetry } from '@cup/contract';
 
 interface Props {
@@ -28,6 +30,11 @@ interface Props {
   size?: number;
   /** 长期性格底色(M4,来自后端战报);缺省 normal = 无底色 */
   disposition?: Disposition;
+  /**
+   * 当前生效的人格包(P4.2);缺省 / null → 出厂体质。
+   * 只管"底色与表达"(水波手感 + 心情/表情阈值),与 disposition(当前情绪)分工不重叠。
+   */
+  pack?: PersonaPack | null;
 }
 
 /**
@@ -61,7 +68,7 @@ const HILITE = '#fffdf9'; // 镜面高光:暖白(冷白在奶油板里发脏)
 
 // ── 组件 ────────────────────────────────────────────────────────
 
-export function CupWidget({ lid, base, size = 200, disposition = 'normal' }: Props) {
+export function CupWidget({ lid, base, size = 200, disposition = 'normal', pack = null }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
   // 遥测走 ref:rAF 里读最新值,不让 1Hz 数据触发 React 重渲染
   const telemetry = useRef<{ lid?: LidTelemetry; base?: BaseTelemetry }>({ lid, base });
@@ -69,6 +76,9 @@ export function CupWidget({ lid, base, size = 200, disposition = 'normal' }: Pro
   // 长期性格也走 ref:它是低频变化的天级信号,不该重建画布/物理(依赖只有 size)
   const dispRef = useRef<Disposition>(disposition);
   dispRef.current = disposition;
+  // 生效包同理走 ref:换包不重建画布,只在 simulate 里换参数(包可能是异步到手的)
+  const paramsRef = useRef<PackRenderParams>(packRenderParams(pack));
+  paramsRef.current = packRenderParams(pack);
   // 显示用的平滑状态(水位/水温),跨渲染保留
   const disp = useRef({ level: 0, temp: 25, init: false });
 
@@ -99,6 +109,7 @@ export function CupWidget({ lid, base, size = 200, disposition = 'normal' }: Pro
     const simulate = (dt: number) => {
       const { lid: l, base: b } = telemetry.current;
       const d = disp.current;
+      const params = paramsRef.current;
 
       // 水位 / 水温:显示平滑(遥测变了才缓缓动)
       const levelTarget = (l?.level_pct ?? 0) / 100;
@@ -141,7 +152,7 @@ export function CupWidget({ lid, base, size = 200, disposition = 'normal' }: Pro
         wave.drive(shakePhase, amp * SHAKE_DRIVE_AMP, dt);
       }
 
-      wave.step(dt);
+      wave.step(dt, params.wave);
       tSec += dt;
 
       // 心情:先看这一帧水位有没有往下掉(被喝),再把状态机往前推一步
@@ -153,6 +164,7 @@ export function CupWidget({ lid, base, size = 200, disposition = 'normal' }: Pro
       lastLevelPct = pct;
       if (tSinceSip !== null) tSinceSip += dt; // 一口之后,提振随时间衰减
       mood.setDisposition(dispRef.current);
+      mood.setParams(params.mood);
       mood.step(dt, shaking, levelTarget);
     };
 

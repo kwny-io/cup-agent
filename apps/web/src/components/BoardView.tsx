@@ -20,6 +20,7 @@ import type {
   ConnectionState,
   GoalResult,
   LiveFrame,
+  PersonaPack,
   ServerHistory,
   ServerPersonalityHistory,
   ServerReport,
@@ -43,6 +44,7 @@ export function Dashboard({
   chat,
   showChat = false,
   disposition = 'normal',
+  pack = null,
   onGoCup,
 }: {
   frame: LiveFrame | null;
@@ -71,6 +73,8 @@ export function Dashboard({
   showChat?: boolean;
   /** 长期性格底色(后端战报给),喂给盖眼预览 */
   disposition?: 'sulky' | 'normal' | 'smug';
+  /** 当前生效人格包(P4.2);null → 出厂体质。透传给盖眼预览改表情阈值 */
+  pack?: PersonaPack | null;
   /** 首启引导里"去看杯子"的落地(窄屏切 Tab);缺省则引导按钮不切视图 */
   onGoCup?: () => void;
 }) {
@@ -107,7 +111,7 @@ export function Dashboard({
       <section className="rounded-2xl bg-white/70 p-4 ring-1 ring-cup-veil/50">
         <h2 className="mb-3 text-sm font-semibold text-cup-deep">杯盖双眼(硬件脸预览)</h2>
         <div className="flex justify-center">
-          <EyePreview lid={frame?.lid} base={frame?.base} events={events} disposition={disposition} />
+          <EyePreview lid={frame?.lid} base={frame?.base} events={events} disposition={disposition} pack={pack} />
         </div>
       </section>
       <section className="rounded-2xl bg-white/70 p-4 ring-1 ring-cup-veil/50">

@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CupWidget } from './CupWidget.tsx';
 import type { Disposition } from '../lib/mood.ts';
+import type { PersonaPack } from '../data/source.ts';
 import type { BaseTelemetry, LidTelemetry } from '@cup/contract';
 
 const POS_KEY = 'cup.widget.pos';
@@ -36,11 +37,14 @@ export function FloatingCup({
   lid,
   base,
   disposition,
+  pack,
 }: {
   lid?: LidTelemetry;
   base?: BaseTelemetry;
   /** 长期性格底色(透传给 CupWidget) */
   disposition?: Disposition;
+  /** 当前生效人格包(透传给 CupWidget) */
+  pack?: PersonaPack | null;
 }) {
   const [pos, setPos] = useState<Pos | null>(loadPos);
   const [collapsed, setCollapsed] = useState(false);
@@ -144,7 +148,7 @@ export function FloatingCup({
         </div>
       ) : (
         <div className="cursor-grab rounded-cup-lg bg-white/70 p-1 shadow-xl ring-1 ring-cup-veil/70 backdrop-blur">
-          <CupWidget lid={lid} base={base} size={SIZE - 8} disposition={disposition} />
+          <CupWidget lid={lid} base={base} size={SIZE - 8} disposition={disposition} pack={pack} />
         </div>
       )}
     </div>

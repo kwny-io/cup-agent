@@ -11,6 +11,8 @@ import { Eyes, EYE_STATE_LABEL, type EyeState, type EyeDisposition, type EyeInpu
 import { renderEyeGrid, EYE_W, EYE_H } from '../lib/eye-render.ts';
 import { Gestures, GESTURE_RESPONSES, GESTURE_LABEL, latestTapTs, type Gesture } from '../lib/gesture.ts';
 import { FIXED_DT } from '../lib/water.ts';
+import { packRenderParams, type PackRenderParams } from '../lib/pack-render.ts';
+import type { PersonaPack } from '../data/source.ts';
 import type { BaseTelemetry, CupEvent, LidTelemetry } from '@cup/contract';
 
 interface Props {
@@ -22,6 +24,8 @@ interface Props {
   disposition?: EyeDisposition;
   /** 显示尺寸(CSS px);缺省 128 = 1:1 */
   size?: number;
+  /** 当前生效的人格包(P4.2);缺省 / null → 出厂体质。只影响表情阈值(contentS) */
+  pack?: PersonaPack | null;
 }
 
 /** 一个"喝了一口"的检测阈值(水位掉 ≥2 个百分点),与 CupWidget 的 noteSip 口径一致 */
@@ -30,7 +34,7 @@ const SIP_DROP = 2;
 /** 手势台词 + 强制表情的展示时长(秒):与备忘"每动作 ≤1 句"同气口,数秒后自散 */
 const GESTURE_HOLD_S = 3;
 
-export function EyePreview({ lid, base, events, disposition = 'normal', size = EYE_W }: Props) {
+export function EyePreview({ lid, base, events, disposition = 'normal', size = EYE_W, pack = null }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
   const telemetry = useRef<{ lid?: LidTelemetry; base?: BaseTelemetry }>({ lid, base });
   telemetry.current = { lid, base };
@@ -38,6 +42,9 @@ export function EyePreview({ lid, base, events, disposition = 'normal', size = E
   eventsRef.current = events ?? [];
   const dispRef = useRef<EyeDisposition>(disposition);
   dispRef.current = disposition;
+  // 生效包走 ref:换包不重建画布,simulate 里换参数即可
+  const paramsRef = useRef<PackRenderParams>(packRenderParams(pack));
+  paramsRef.current = packRenderParams(pack);
   // 状态标签低频更新(只在状态变化时 setState,不随 rAF 抖)
   const [state, setState] = useState<EyeState>('idle');
   const stateRef = useRef<EyeState>('idle');
@@ -152,6 +159,7 @@ export function EyePreview({ lid, base, events, disposition = 'normal', size = E
         idleSec,
         forgotSec,
       };
+      eyes.setParams(paramsRef.current.eye);
       eyes.step(dt, inp);
       if (eyes.current !== stateRef.current) {
         stateRef.current = eyes.current;

@@ -64,3 +64,35 @@ test('EyePreview:交接按钮真实点击切换文案与 aria-pressed', () => {
   assert.match(btn.textContent ?? '', /脸在盖子上/);
   unmount();
 });
+
+/** 造一个只带阈值的市场包(P4.2) */
+const demoPack = {
+  pack_id: 'p1',
+  author_user_id: 'u1',
+  name: '急性子',
+  tone: '简短',
+  thresholds: { REFUSE_S: 0.1, SMUG_S: 9, SULK_LEVEL: 0.5, CONTENT_S: 8 },
+  wave: { k: 8, c: 220, damp: 1.2 },
+  lines: [],
+  status: 'approved' as const,
+  created_at: 0,
+};
+
+test('CupWidget:带 pack 挂载照常出画布、跑循环不抛(注入口不掉链子)', async () => {
+  const { host, render, unmount } = mount(createElement(CupWidget, { size: 160, pack: demoPack }));
+  assert.ok(host.querySelector('canvas'), '带包也应有 canvas');
+  await flush();
+  // 换包:同一画布实例换参,不重建(host 里还是那张 canvas)
+  const before = host.querySelector('canvas');
+  render(createElement(CupWidget, { size: 160, pack: null }));
+  assert.equal(host.querySelector('canvas'), before, '换包不该重建画布');
+  await flush();
+  unmount();
+});
+
+test('EyePreview:带 pack 挂载照常出画布与标签', async () => {
+  const { host, unmount } = mount(createElement(EyePreview, { size: 128, pack: demoPack }));
+  assert.equal(host.querySelector('canvas')!.getAttribute('aria-label'), '杯盖眼睛预览');
+  await flush();
+  unmount();
+});
