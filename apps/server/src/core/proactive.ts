@@ -18,6 +18,7 @@
  */
 import type { Store } from '../store/store.ts';
 import { dayKey, dayStart } from '../store/store.ts';
+import { cooldownMsFor, decideSpeak, type TimingTurn } from './proactive-timing.ts';
 import type { CommandQueue } from './commands.ts';
 import type { ChatLlm, ChatAnswer, LogFn } from './chat/types.ts';
 import type { ChatStore } from './chat/memory.ts';
@@ -29,16 +30,9 @@ import { abandonedCue, bodyCueFromEvents, bodyPrompt, type BodyCue, type BodyCue
 import { getTool, type ToolCtx } from './chat/tools.ts';
 import type { LiveHub } from '../api/live.ts';
 
-/** 该喝水的本地时段(含端点) */
-const HOUR_FROM = 14;
-const HOUR_TO = 18;
 /** 夜间静默:身体语料是**事件**触发(不分时段),但半夜 3 点被碰一下不该吵醒主人 */
 const QUIET_FROM = 22;
 const QUIET_TO = 7;
-/** 两次主动开口的最小间隔(欠水提醒与身体语料**共用**这一个冷却,T16) */
-const COOLDOWN_MS = 2 * 3_600_000;
-/** 喝得不足目标这个比例就开口 */
-const THIRSTY_RATIO = 0.5;
 /** 巡检间隔 */
 const TICK_MS = 60_000;
 
@@ -177,29 +171,53 @@ export class ProactiveScheduler {
   }
 
   private async shouldSpeak(cupId: string, nowMs: number): Promise<boolean> {
-    const hour = new Date(nowMs).getHours();
-    if (hour < HOUR_FROM || hour > HOUR_TO) return false;
-
     const t = this.deps.store;
     const date = dayKey(nowMs);
     const agg = await t.agg(cupId, date);
-    if (!agg || agg.event_count === 0) return false; // 今天还没数据 → 不硬找话
-
-    const goal = agg.goal_ml > 0 ? agg.goal_ml : await t.goal(cupId);
-    if (!(goal > 0 && agg.drank_ml < THIRSTY_RATIO * goal)) return false;
-
-    return !(await this.inCooldown(cupId, nowMs));
+    const goal = agg && agg.goal_ml > 0 ? agg.goal_ml : await t.goal(cupId);
+    const decision = decideSpeak({
+      nowMs,
+      hour: new Date(nowMs).getHours(),
+      drankMl: agg?.drank_ml ?? 0,
+      goalMl: goal,
+      eventCount: agg?.event_count ?? 0,
+      recentTurns: await this.recentTurns(cupId),
+      lastDrinkTs: await this.lastDrinkTsToday(cupId, nowMs),
+    });
+    if (!decision.speak) {
+      // 只记"够格但被不打扰挡下"的情形,避免刷屏(out-of-window/not-thirsty 是常态,不记)
+      if (decision.reason === 'user-just-spoke' || decision.reason === 'just-drank' || decision.reason === 'cooldown' || decision.reason === 'backoff-elapsed') {
+        this.deps.log(`主动开口让位[${cupId}]: ${decision.reason}`, 'info');
+      }
+      return false;
+    }
+    return true;
   }
 
-  /** 冷却:记忆里最后一条 proactive 距今 < 2h 就闭嘴 */
+  /** 冷却(欠水提醒与身体语料共用,T16):按"被无视次数"自适应,不再固定 2h */
   private async inCooldown(cupId: string, nowMs: number): Promise<boolean> {
-    const recent = await this.deps.memory.recentTurns(cupId, 50);
+    const recent = await this.recentTurns(cupId);
+    const cooldown = cooldownMsFor(recent);
     for (let i = recent.length - 1; i >= 0; i--) {
-      if (recent[i]!.role === 'proactive') {
-        return nowMs - recent[i]!.ts < COOLDOWN_MS;
-      }
+      if (recent[i]!.role === 'proactive') return nowMs - recent[i]!.ts < cooldown;
     }
     return false;
+  }
+
+  /** 最近对话轮转成时机模型要的精简形状(role + ts),不绑 ChatStore 结构 */
+  private async recentTurns(cupId: string): Promise<TimingTurn[]> {
+    return (await this.deps.memory.recentTurns(cupId, 50)).map((r) => ({ role: r.role, ts: r.ts }));
+  }
+
+  /** 今天最近一次喝水事件时刻;没有 → null(用于"刚喝过先按住") */
+  private async lastDrinkTsToday(cupId: string, nowMs: number): Promise<number | null> {
+    const start = dayStart(dayKey(nowMs));
+    const evs = await this.deps.store.events(cupId, start, nowMs + 1);
+    let last: number | null = null;
+    for (const e of evs) {
+      if (e.type === 'drink' && (last === null || e.ts > last)) last = e.ts;
+    }
+    return last;
   }
 
   private async speak(cupId: string, nowMs: number): Promise<ChatAnswer> {

@@ -9,13 +9,15 @@ import { HistoryCard } from './dashboard/HistoryCard.tsx';
 import { MoodHistoryCard } from './dashboard/MoodHistoryCard.tsx';
 import { GoalCard } from './dashboard/GoalCard.tsx';
 import { DrinkBuckets } from './dashboard/DrinkBuckets.tsx';
+import { GetStartedCard } from './dashboard/GetStartedCard.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { EyePreview } from './EyePreview.tsx';
 import { PowerPanel } from './PowerPanel.tsx';
-import { DAILY_GOAL_ML, todayStats, snapshot } from '../lib/stats.ts';
+import { DAILY_GOAL_ML, todayStats, snapshot, isToday } from '../lib/stats.ts';
 import type { TodayStats } from '../lib/stats.ts';
 import type { ChatController } from '../data/useChat.ts';
 import type {
+  ConnectionState,
   GoalResult,
   LiveFrame,
   ServerHistory,
@@ -29,6 +31,7 @@ import type { CupEvent } from '@cup/contract';
 export function Dashboard({
   frame,
   events,
+  state = 'open',
   server,
   report,
   series,
@@ -40,9 +43,12 @@ export function Dashboard({
   chat,
   showChat = false,
   disposition = 'normal',
+  onGoCup,
 }: {
   frame: LiveFrame | null;
   events: CupEvent[];
+  /** 连接状态;喂给首启引导(未连上时它先教"等连上") */
+  state?: ConnectionState;
   /** 后端今日快照;有则用它当"官方数字",否则回退前端现算(M2 行为) */
   server: ServerToday | null;
   /** 后端每日战报;有则战报卡显示后端文案 + 长期性格 */
@@ -65,6 +71,8 @@ export function Dashboard({
   showChat?: boolean;
   /** 长期性格底色(后端战报给),喂给盖眼预览 */
   disposition?: 'sulky' | 'normal' | 'smug';
+  /** 首启引导里"去看杯子"的落地(窄屏切 Tab);缺省则引导按钮不切视图 */
+  onGoCup?: () => void;
 }) {
   // 前端现算:够看交互量(续水/摇杯/报警),但"今日量 / 连续天数"以跨天聚合为准
   const fromEvents = todayStats(events);
@@ -79,9 +87,18 @@ export function Dashboard({
     : fromEvents;
   const g = goal ?? server?.goal_ml ?? DAILY_GOAL_ML;
   const snap = snapshot(frame?.lid, frame?.base);
+  // 首启引导的输入:今天有没有动静(以事件数为准,与统计口径一致)
+  const now = Date.now();
+  const eventCountToday = events.reduce((n, e) => (isToday(e.ts, now) ? n + 1 : n), 0);
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4">
+      <GetStartedCard
+        state={state}
+        drankMl={stats.intakeMl}
+        eventCountToday={eventCountToday}
+        onGoCup={onGoCup ?? (() => {})}
+      />
       <div className="grid gap-4 sm:grid-cols-2">
         <TodayPanel stats={stats} snap={snap} goal={g} />
         <Streak stats={stats} streak={server?.streak ?? null} goal={g} />

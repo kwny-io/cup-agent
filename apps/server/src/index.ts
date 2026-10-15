@@ -282,3 +282,17 @@ export {
   type GrowthNotifyStore,
   type GrowthNotifyDeps,
 } from './core/growth-notify.ts';
+export {
+  decideSpeak,
+  ignoredStreak,
+  cooldownMsFor,
+  type TimingInput,
+  type TimingDecision,
+  type TimingTurn,
+  BASE_COOLDOWN_MS,
+  BACKOFF_PER_IGNORE_MS,
+  MAX_COOLDOWN_MS,
+  ENGAGE_WINDOW_MS,
+  USER_NOTCH_MS,
+  JUST_DRANK_QUIET_MS,
+} from './core/proactive-timing.ts';

@@ -191,6 +191,7 @@ export function App() {
           <Dashboard
             frame={frame}
             events={events}
+            state={state}
             server={server}
             report={report}
             series={series}
@@ -220,6 +221,7 @@ export function App() {
           <Dashboard
             frame={frame}
             events={events}
+            state={state}
             server={server}
             report={report}
             series={series}
@@ -229,6 +231,7 @@ export function App() {
             goal={goal}
             setGoal={setGoal}
             disposition={disposition}
+            onGoCup={() => setTab('cup')}
           />
         )}
       </main>
