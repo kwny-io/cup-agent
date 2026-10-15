@@ -337,6 +337,17 @@ if (!PG_URL) {
     assert.ok(t.rows.length >= 16, `期望表数 ≥16,实际 ${t.rows.length}`);
   });
 
+  // friends 反向索引（0006）：PK (a,b) 只覆盖 a 侧，`friends`/`deleteAccount` 查
+  // `OR b_user_id = $1` 需要 b 侧索引，否则全表扫。这里钉住索引**存在**（迁移真落库）。
+  test('[Pg] 0006：friends 的 b_user_id 反向索引已建', async () => {
+    const t = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = 'friends'`,
+      [schema],
+    );
+    const names = t.rows.map((r) => r.indexname);
+    assert.ok(names.includes('friends_b_user'), `期望 friends_b_user 索引,实际: ${names.join(', ')}`);
+  });
+
   await runStoreContract('Pg', fresh);
 
   // chat 契约
