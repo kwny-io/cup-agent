@@ -32,6 +32,12 @@ import {
   resolveLlmEncKey,
   type CupLlmStore,
 } from './core/cup-llm.ts';
+import {
+  FileActivePackStore,
+  MemoryActivePackStore,
+  activePackFilePath,
+  type CupActivePackStore,
+} from './core/active-pack.ts';
 import { ProactiveScheduler } from './core/proactive.ts';
 import { consoleSink, createLogger, type LogLevel } from './core/logger.ts';
 import { composeSinks, createLogPipeline, type LogSinkHandle } from './core/log-pipeline.ts';
@@ -46,6 +52,7 @@ import { PgChatStore } from './store/pg/chat.ts';
 import { PgAccountsStore } from './store/pg/accounts.ts';
 import { PgProfileStore } from './store/pg/profile.ts';
 import { PgCupLlmStore } from './store/pg/cup-llm.ts';
+import { PgActivePackStore } from './store/pg/active-pack.ts';
 import { randomBytes } from 'node:crypto';
 import type { Server } from 'node:http';
 
@@ -109,6 +116,8 @@ export interface AppOptions {
   profiles?: ProfileStore;
   /** 每杯模型配置(BYOK);不给则随 pgUrl / dataDir 选实现,否则内存 */
   cupLlm?: CupLlmStore;
+  /** 每杯当前生效的人格包;不给则随 pgUrl / dataDir 选实现,否则内存 */
+  activePack?: CupActivePackStore;
   /** 每杯 key 的**加密**密钥;不给则由 env `CUP_LLM_ENC_KEY` / dataDir 解析(见 resolveLlmEncKey) */
   llmEncKey?: Buffer;
   /**
@@ -165,6 +174,8 @@ export interface App {
   profiles: ProfileStore;
   /** 每杯模型配置门面(BYOK;见 core/cup-llm.ts) */
   cupLlm: CupLlmService;
+  /** 每杯当前生效的人格包存储(P4.2;见 core/active-pack.ts) */
+  activePack: CupActivePackStore;
   /** 服务日志存储(结构化日志落库/内存) */
   serverLogs: ServerLogStore;
   /** 文件持久化句柄(未启用 dataDir 时为 null) */
@@ -256,6 +267,14 @@ export function createApp(opts: AppOptions = {}): App {
         : new MemoryCupLlmStore());
   const llmEncKey = opts.llmEncKey ?? resolveLlmEncKey(opts.dataDir);
   const cupLlm = new CupLlmService({ store: cupLlmStore, key: llmEncKey });
+  // 每杯当前生效的人格包(P4.2;照 cupLlm 三元式):注入 > PG > 文件 > 内存。
+  const activePack =
+    opts.activePack ??
+    (pool
+      ? new PgActivePackStore(pool)
+      : opts.dataDir
+        ? new FileActivePackStore(activePackFilePath(opts.dataDir))
+        : new MemoryActivePackStore());
   const cups = opts.cups ?? [];
 
   // 主动开口(P5):只有显式开启才起 —— 默认关,免得测试/离线环境里乱说话。
@@ -313,6 +332,7 @@ export function createApp(opts: AppOptions = {}): App {
     claims,
     requireClaim: opts.requireClaim,
     cupLlm,
+    activePack,
     serverLogs,
     pgPool: pool ?? undefined,
     retention: opts.retention,
@@ -335,6 +355,7 @@ export function createApp(opts: AppOptions = {}): App {
     claims,
     profiles,
     cupLlm,
+    activePack,
     serverLogs,
     persist,
     proactive,
@@ -361,6 +382,7 @@ export function createApp(opts: AppOptions = {}): App {
       await accounts.flush(); // 账号 / 会话 / 市场 / 社交落盘(内存/Pg 实现 no-op)
       await profiles.flush(); // 人格档案落盘(内存/Pg 实现 no-op)
       await cupLlm.flush(); // 每杯模型配置落盘(内存/Pg 实现 no-op)
+      await activePack.flush(); // 每杯生效包落盘(内存/Pg 实现 no-op)
       await persist?.flush(); // 目标 + 画像落盘(仅文件实现)
       await persistent?.close(); // 排干日志缓冲(落库 + 落文件)—— 须在 pool.end() 之前
       await pool?.end(); // 关 pg 连接池(仅 Pg 模式)

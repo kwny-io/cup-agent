@@ -112,6 +112,7 @@ export { PgChatStore } from './store/pg/chat.ts';
 export { PgAccountsStore } from './store/pg/accounts.ts';
 export { PgProfileStore } from './store/pg/profile.ts';
 export { PgCupLlmStore } from './store/pg/cup-llm.ts';
+export { PgActivePackStore } from './store/pg/active-pack.ts';
 export { PgServerLogStore } from './store/pg/server-logs.ts';
 // ── 服务日志端(结构化日志落库/落文件 + 管理页读写口)──────────────
 export { MemoryServerLogStore, type MemoryServerLogOptions } from './store/memory-server-logs.ts';
@@ -205,6 +206,12 @@ export {
   type CupLlmStore,
   type CupLlmInput,
 } from './core/cup-llm.ts';
+export {
+  MemoryActivePackStore,
+  FileActivePackStore,
+  activePackFilePath,
+  type CupActivePackStore,
+} from './core/active-pack.ts';
 export {
   normalizeEmail,
   friendPair,

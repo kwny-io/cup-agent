@@ -21,6 +21,7 @@ import { PgChatStore } from '../src/store/pg/chat.ts';
 import { PgAccountsStore } from '../src/store/pg/accounts.ts';
 import { PgProfileStore } from '../src/store/pg/profile.ts';
 import { PgCupLlmStore } from '../src/store/pg/cup-llm.ts';
+import { PgActivePackStore } from '../src/store/pg/active-pack.ts';
 import { createPgPool, type Pool } from '../src/store/pg/pool.ts';
 import { migrate, applyRetention, listPartitions } from '../src/store/pg/migrate.ts';
 
@@ -322,6 +323,7 @@ if (!PG_URL) {
     'users', 'sessions', 'packs', 'subscriptions', 'friends',
     'cup_settings', 'cup_latest', 'daily_agg', 'telemetry', 'events',
     'chat_turns', 'chat_profile', 'cup_traits', 'memory_cards', 'cup_claims', 'cup_llm',
+    'cup_active_pack',
     'server_logs',
   ].join(', ');
   const fresh = async (): Promise<Store> => {
@@ -334,7 +336,7 @@ if (!PG_URL) {
       `SELECT tablename FROM pg_tables WHERE schemaname = $1`,
       [schema],
     );
-    assert.ok(t.rows.length >= 16, `期望表数 ≥16,实际 ${t.rows.length}`);
+    assert.ok(t.rows.length >= 17, `期望表数 ≥17,实际 ${t.rows.length}`);
   });
 
   // friends 反向索引（0006）：PK (a,b) 只覆盖 a 侧，`friends`/`deleteAccount` 查
@@ -459,6 +461,28 @@ if (!PG_URL) {
     await llm.delete(CUP);
     assert.equal(await llm.get(CUP), null);
     await llm.delete(CUP); // 二次删 no-op
+  });
+
+  // 每杯当前生效包(P4.2;表 0007_cup_active_pack.sql)—— 独立表,只存 cup→pack_id 关系。
+  // 关键语义:per-CUP 单值(至多一件)、get 无行 null、set 幂等覆盖、clear 无行 no-op。
+  test('[Pg] PgActivePackStore：get/set/clear(per-CUP 单值)', async () => {
+    await pool.query(`TRUNCATE ${TABLES} RESTART IDENTITY CASCADE`);
+    const ap = new PgActivePackStore(pool);
+    assert.equal(await ap.get(CUP), null);
+    await ap.set(CUP, 'p1');
+    assert.equal(await ap.get(CUP), 'p1');
+    // 幂等覆盖:同 cup → 换包
+    await ap.set(CUP, 'p2');
+    assert.equal(await ap.get(CUP), 'p2');
+    // 别的杯互不影响(per-CUP 而非全局)
+    await ap.set('cup-OTHER', 'p9');
+    assert.equal(await ap.get('cup-OTHER'), 'p9');
+    assert.equal(await ap.get(CUP), 'p2');
+    // 卸包:有行清掉、二次 no-op
+    await ap.clear(CUP);
+    assert.equal(await ap.get(CUP), null);
+    await ap.clear(CUP); // 二次清 no-op
+    assert.equal(await ap.get('cup-OTHER'), 'p9', 'clear 只动指定杯');
   });
 
   // 三档删除（第 4 阶段）—— Pg 实现与 memory 同语义：conversation 本店 no-op、
