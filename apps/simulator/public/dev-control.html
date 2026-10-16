@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>模拟器操控台 · cup-agent</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #191c23; --line: #2a2f3a; --ink: #e6e9ef;
+    --dim: #8b93a1; --accent: #4f8cff; --ok: #3ecf8e; --warn: #f2b53c; --hot: #ff6b57;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    display: flex; justify-content: center; padding: 20px 16px 60px;
+  }
+  .wrap { width: 100%; max-width: 720px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 14px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: none; }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--hot); }
+  input[type=text] {
+    flex: 1; min-width: 160px; background: #0d0f13; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-family: inherit;
+  }
+  button {
+    background: #232834; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 11px; font: inherit; cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  button:hover { background: #2c323f; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.hot { border-color: #5a2f2a; }
+  .grid { display: grid; gap: 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  }
+  .card h2 {
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--dim); margin: 0 0 10px; font-weight: 600;
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 8px; }
+  label.f { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+  label.f input[type=number] {
+    width: 72px; background: #0d0f13; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; font-family: inherit;
+  }
+  label.f input[type=range] { width: 130px; }
+  .readout {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px;
+  }
+  .metric { background: #0d0f13; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .metric .k { color: var(--dim); font-size: 11px; }
+  .metric .v { font-size: 17px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .metric .v.hot { color: var(--hot); }
+  .metric .v.warm { color: var(--warn); }
+  .metric .v.cool { color: var(--accent); }
+  #log {
+    background: #0a0c10; border: 1px solid var(--line); border-radius: 8px;
+    padding: 9px 11px; height: 190px; overflow: auto;
+    font: 12px/1.65 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
+  }
+  #log .t { color: var(--dim); }
+  #log .e { color: var(--ok); }
+  #log .c { color: var(--accent); }
+  #log .x { color: var(--hot); }
+  .hint { color: var(--dim); font-size: 11px; margin-top: 8px; }
+  kbd { background: #232834; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>模拟器操控台</h1>
+  <div class="sub">直接对假杯子发控制指令 —— 走模拟器的 WS 服务(默认 <code>ws://localhost:8787</code>)。纯静态页,无需构建。</div>
+
+  <div class="bar">
+    <span id="dot" class="dot"></span>
+    <span id="status">未连接</span>
+    <input type="text" id="url" value="ws://localhost:8787" spellcheck="false" aria-label="模拟器 WS 地址">
+    <button id="connect" class="primary">连接</button>
+    <button id="disconnect">断开</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>杯子状态(实时)</h2>
+      <div class="readout" id="readout">
+        <div class="metric"><div class="k">水位</div><div class="v" id="m-vol">—</div></div>
+        <div class="metric"><div class="k">水温</div><div class="v" id="m-temp">—</div></div>
+        <div class="metric"><div class="k">姿态</div><div class="v" id="m-motion">—</div></div>
+        <div class="metric"><div class="k">电量</div><div class="v" id="m-batt">—</div></div>
+        <div class="metric"><div class="k">在座</div><div class="v" id="m-base">—</div></div>
+        <div class="metric"><div class="k">倾斜</div><div class="v" id="m-tilt">—</div></div>
+      </div>
+      <div class="hint">接上模拟器后,这些数字每秒随遥测帧刷新。</div>
+    </div>
+
+    <div class="card">
+      <h2>喝 / 倒</h2>
+      <div class="row">
+        <label class="f">喝 <input type="number" id="drink-ml" value="60" min="1" max="600" step="10"> ml</label>
+        <button data-cmd="drink">喝一口</button>
+      </div>
+      <div class="row">
+        <label class="f">续水到 <input type="number" id="refill-ml" value="320" min="0" max="600" step="10"> ml @
+          <input type="number" id="refill-c" value="55" min="-10" max="120" step="5"> °C</label>
+        <button data-cmd="refill">续水</button>
+      </div>
+      <div class="row">
+        <label class="f">倒热水到 <input type="number" id="hot-ml" value="300" min="0" max="600" step="10"> ml @
+          <input type="number" id="hot-c" value="85" min="-10" max="120" step="5"> °C</label>
+        <button data-cmd="hot_water" class="hot">倒热水</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>动作 / 姿态</h2>
+      <div class="row">
+        <label class="f">摇 <input type="number" id="shake-ms" value="1500" min="100" max="60000" step="100"> ms</label>
+        <button data-cmd="shake">摇一摇</button>
+      </div>
+      <div class="row">
+        <label class="f">倾斜 <input type="number" id="tilt-deg" value="50" min="0" max="180" step="5"> ° 方向
+          <input type="number" id="tilt-dir" value="90" min="0" max="359" step="15"> °</label>
+        <button data-cmd="tilt">倾斜</button>
+        <button data-cmd="idle">回正</button>
+      </div>
+      <div class="row">
+        <button data-cmd="lift">拿起来</button>
+        <button data-cmd="put_down">放下</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>盖顶按压(手势)</h2>
+      <div class="row">
+        <label class="f">按 <input type="number" id="press-ms" value="150" min="1" max="60000" step="50"> ms</label>
+        <button data-cmd="press">按压</button>
+        <span class="hint">&lt;600ms → tap,&nbsp;≥600ms → long_press</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>水 / 脚本</h2>
+      <div class="row">
+        <label class="f">水温 <input type="range" id="temp-range" min="-10" max="120" step="1" value="55">
+          <output id="temp-out">55</output> °C</label>
+        <button data-cmd="set_temp">设为该温度</button>
+      </div>
+      <div class="row">
+        <button data-cmd="pause">暂停脚本</button>
+        <button data-cmd="resume">继续脚本</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>日志</h2>
+      <div id="log"></div>
+      <div class="hint">上行帧(遥测/事件)与你的控制指令都会记在这里。按 <kbd>Esc</kbd> 清屏。</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var ws = null, connected = false;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function log(cls, text) {
+    var box = $('log');
+    var t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    var atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+    box.insertAdjacentHTML('beforeend',
+      '<span class="t">' + t + '</span> <span class="' + cls + '">' + esc(text) + '</span>\n');
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+  function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]; }); }
+
+  function setStatus(state, text) {
+    $('status').textContent = text;
+    $('dot').className = 'dot' + (state === 'on' ? ' on' : state === 'off' ? ' off' : '');
+  }
+
+  function connect() {
+    if (ws) { try { ws.close(); } catch (e) {} }
+    var url = $('url').value.trim();
+    setStatus('wait', '连接中…');
+    log('c', '→ 连接 ' + url);
+    try { ws = new WebSocket(url); } catch (e) { setStatus('off', '地址非法'); log('x', '地址非法:' + e.message); return; }
+    ws.onopen = function () { connected = true; setStatus('on', '已连接'); log('e', '✓ 已连接 ' + url); };
+    ws.onclose = function () { connected = false; setStatus('off', '未连接'); log('x', '✗ 连接关闭'); };
+    ws.onerror = function () { log('x', '连接错误(模拟器起了吗?端口对吗?)'); };
+    ws.onmessage = function (ev) { onData(ev.data); };
+  }
+  function disconnect() {
+    if (ws) { ws.close(); ws = null; }
+    connected = false; setStatus('off', '未连接');
+  }
+
+  // 模拟器一次可能发多行 NDJSON(每条一个契约信封)
+  function onData(data) {
+    var lines = String(data).split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim(); if (!line) continue;
+      var obj; try { obj = JSON.parse(line); } catch (e) { continue; }
+      if (obj && obj.kind === 'hello') { log('c', '← hello ' + JSON.stringify(obj)); continue; }
+      if (obj && obj.kind === 'lid') { applyLid(obj.payload); log('e', '← lid  水位 ' + fmt(obj.payload.level_pct, '%') + ' · ' + fmt(obj.payload.temp_c, '°C') + ' · ' + obj.payload.motion); continue; }
+      if (obj && obj.kind === 'base') { applyBase(obj.payload); log('e', '← base 重量 ' + fmt(obj.payload.weight_g, 'g') + ' · 在座 ' + obj.payload.present); continue; }
+      if (obj && obj.kind === 'event') { log('c', '← 事件 ' + obj.payload.type + detail(obj.payload)); continue; }
+      log('c', '← ' + line);
+    }
+  }
+  function detail(p) {
+    var bits = [];
+    if (p.amount_ml != null) bits.push(p.amount_ml + 'ml');
+    if (p.duration_ms != null) bits.push(p.duration_ms + 'ms');
+    return bits.length ? '(' + bits.join(', ') + ')' : '';
+  }
+
+  function fmt(v, unit) { return (v == null || isNaN(v)) ? '—' : Math.round(v * 10) / 10 + unit; }
+  function applyLid(p) {
+    $('m-vol').textContent = fmt(p.level_pct, '%');
+    var tc = $('m-temp'); tc.textContent = fmt(p.temp_c, '°C');
+    tc.className = 'v' + (p.temp_c >= 65 ? ' hot' : p.temp_c >= 40 ? ' warm' : ' cool');
+    $('m-motion').textContent = p.motion;
+    $('m-batt').textContent = fmt(p.battery_pct, '%');
+    $('m-tilt').textContent = p.tilt_deg > 0 ? (Math.round(p.tilt_deg) + '°/' + p.tilt_dir + '°') : '—';
+  }
+  function applyBase(p) {
+    $('m-base').textContent = p.present ? '是' : '否';
+    if (p.temp_c != null && $('m-temp').textContent === '—') $('m-temp').textContent = fmt(p.temp_c, '°C');
+  }
+
+  function send(msg) {
+    if (!connected || !ws || ws.readyState !== 1) { log('x', '未连接,发不出去'); return; }
+    ws.send(JSON.stringify(msg));
+    log('c', '→ ' + JSON.stringify(msg));
+  }
+  function n(id) { return Number($(id).value); }
+
+  var BUILDERS = {
+    drink:    function () { return { type: 'drink', ml: n('drink-ml') }; },
+    refill:   function () { return { type: 'refill', target_ml: n('refill-ml'), pour_c: n('refill-c') }; },
+    hot_water:function () { return { type: 'hot_water', target_ml: n('hot-ml'), pour_c: n('hot-c') }; },
+    shake:    function () { return { type: 'shake', duration_ms: n('shake-ms') }; },
+    tilt:     function () { return { type: 'tilt', deg: n('tilt-deg'), dir: n('tilt-dir') }; },
+    idle:     function () { return { type: 'idle' }; },
+    lift:     function () { return { type: 'lift' }; },
+    put_down: function () { return { type: 'put_down' }; },
+    press:    function () { return { type: 'press', duration_ms: n('press-ms') }; },
+    set_temp: function () { return { type: 'set_temp', c: n('temp-range') }; },
+    pause:    function () { return { type: 'pause' }; },
+    resume:   function () { return { type: 'resume' }; }
+  };
+
+  // 所有 data-cmd 按钮
+  document.querySelectorAll('[data-cmd]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var cmd = btn.getAttribute('data-cmd');
+      var b = BUILDERS[cmd]; if (!b) return;
+      send(b());
+    });
+  });
+
+  // 温度滑块实时读数 + 松手即设温(拖动时也发,方便"看着温度爬")
+  var tr = $('temp-range');
+  tr.addEventListener('input', function () { $('temp-out').textContent = tr.value; if (connected) send({ type: 'set_temp', c: Number(tr.value) }); });
+
+  $('connect').addEventListener('click', connect);
+  $('disconnect').addEventListener('click', disconnect);
+  $('url').addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') $('log').textContent = ''; });
+
+  // 打开就自动连一次
+  connect();
+})();
+</script>
+</body>
+</html>
