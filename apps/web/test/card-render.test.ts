@@ -52,6 +52,23 @@ test('cardHeight:随行数增长', () => {
   assert.ok(cardHeight(a) > cardHeight(b), '行多的卡更高');
 });
 
+// ── P4.3:分享卡带邀请码 ──────────────────────────────────────────
+
+test('buildShareCard:带 invite → 卡面压一行邀请码', () => {
+  const m = buildShareCard({ streak: 1, members: 1, days: [] }, '2026-10-12', 'ABCDEFGHJK');
+  const text = m.lines.map((l) => l.text).join(' | ');
+  assert.match(text, /邀请码\s+ABCDEFGHJK/);
+});
+
+test('buildShareCard:invite 为 null / 空串 / 空白 → 不加邀请行', () => {
+  for (const v of [null, undefined, '', '   '] as const) {
+    const m = buildShareCard({ streak: 1, members: 1, days: [] }, '2026-10-12', v);
+    assert.ok(!m.lines.some((l) => l.text.includes('邀请码')), `invite=${JSON.stringify(v)} 不该加行`);
+  }
+});
+
+
+
 test('drawCard:在桩 canvas 上跑通不抛,返回卡高', () => {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d')!;

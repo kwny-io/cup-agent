@@ -17,7 +17,8 @@ export interface Session {
   /** 首次 me() 是否还在跑(避免"闪一下未登录"再变已登录) */
   loading: boolean;
   login: (email: string, password: string) => Promise<AuthOutcome>;
-  register: (email: string, password: string, nickname?: string) => Promise<AuthOutcome>;
+  /** `invite` 为分享卡邀请码(P4.3);带上则后端记一条归属边(不影响注册成败)。 */
+  register: (email: string, password: string, nickname?: string, invite?: string) => Promise<AuthOutcome>;
   logout: () => Promise<void>;
   /** 外部动作(如改昵称)后手动刷一次用户视图 */
   refresh: () => Promise<void>;
@@ -61,9 +62,9 @@ export function useSession(social: SocialApi | null): Session {
   );
 
   const register = useCallback(
-    async (email: string, password: string, nickname?: string): Promise<AuthOutcome> => {
+    async (email: string, password: string, nickname?: string, invite?: string): Promise<AuthOutcome> => {
       if (!social) return { ok: false, reason: 'offline' };
-      const out = await social.register(email, password, nickname);
+      const out = await social.register(email, password, nickname, invite);
       if (out.ok) setUser(out.user);
       return out;
     },

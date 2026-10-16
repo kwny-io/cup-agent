@@ -20,6 +20,8 @@ import type {
   CupLlmPublic,
   FriendView,
   GrowthSnapshot,
+  InvitePreview,
+  InviteSummary,
   LogPage,
   LogPartition,
   LogQuery,
@@ -32,6 +34,7 @@ import type {
   ServerProfile,
   SocialApi,
   TeamState,
+  TraitRecord,
 } from './source.ts';
 import { isGrowthSnapshot, isMemoryCard } from './source.ts';
 
@@ -212,11 +215,12 @@ export class CloudSocial implements SocialApi {
     return { ok: false, reason: this.reasonOf(r), error: this.errorOf(r) };
   }
 
-  register(email: string, password: string, nickname?: string): Promise<AuthOutcome> {
+  register(email: string, password: string, nickname?: string, invite?: string): Promise<AuthOutcome> {
     return this.auth('/auth/register', {
       email,
       password,
       ...(nickname !== undefined ? { nickname } : {}),
+      ...(invite !== undefined && invite !== '' ? { invite } : {}),
     });
   }
 
@@ -448,5 +452,59 @@ export class CloudSocial implements SocialApi {
   async getTeam(): Promise<TeamState | null> {
     const r = await this.req('GET', '/social/team');
     return r.ok ? (r.data as TeamState) : null;
+  }
+
+  // ── 删好友 / 隐私开关(P4.4)───────────────────────────────────
+
+  async deleteFriend(friendUserId: string): Promise<boolean> {
+    const r = await this.req('DELETE', `/social/friends/${encodeURIComponent(friendUserId)}`);
+    return r.ok;
+  }
+
+  async getPrivacy(): Promise<boolean | null> {
+    const r = await this.req('GET', '/social/privacy');
+    if (!r.ok) return null;
+    const v = (r.data as { visible?: unknown }).visible;
+    return typeof v === 'boolean' ? v : null;
+  }
+
+  async setPrivacy(visible: boolean): Promise<boolean | null> {
+    const r = await this.req('PUT', '/social/privacy', { visible });
+    if (!r.ok) return null;
+    const v = (r.data as { visible?: unknown }).visible;
+    return typeof v === 'boolean' ? v : null;
+  }
+
+  // ── 分享卡邀请码 / 归属边(P4.3)───────────────────────────────
+
+  async mintInvite(): Promise<string | null> {
+    const r = await this.req('POST', '/social/invite');
+    if (!r.ok) return null;
+    const code = (r.data as { code?: unknown }).code;
+    return typeof code === 'string' && code !== '' ? code : null;
+  }
+
+  async getInvite(): Promise<InviteSummary | null> {
+    const r = await this.req('GET', '/social/invite');
+    if (!r.ok) return null;
+    const d = r.data as { invited_count?: unknown; invited_by?: unknown };
+    return {
+      invited_count: typeof d?.invited_count === 'number' ? d.invited_count : 0,
+      invited_by: typeof d?.invited_by === 'string' ? d.invited_by : null,
+    };
+  }
+
+  async previewInvite(code: string): Promise<InvitePreview | null> {
+    // 公开端点(免登录);但已登录时带上令牌也无妨(后端不看)。
+    const r = await this.req('GET', `/social/invite/${encodeURIComponent(code)}`);
+    if (!r.ok) return null;
+    const d = r.data as { valid?: unknown; inviter?: unknown };
+    const raw = d?.inviter;
+    if (!raw || typeof raw !== 'object') return { valid: d?.valid === true, inviter: null };
+    const o = raw as Record<string, unknown>;
+    const nickname = typeof o.nickname === 'string' ? o.nickname : '';
+    const traits = o.traits && typeof o.traits === 'object' ? (o.traits as TraitRecord) : null;
+    const streak = typeof o.streak === 'number' ? o.streak : null;
+    return { valid: d?.valid === true, inviter: { nickname, traits, streak } };
   }
 }

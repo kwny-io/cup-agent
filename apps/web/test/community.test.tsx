@@ -16,6 +16,7 @@ import { LlmCard } from '../src/components/dashboard/LlmCard.tsx';
 import { BindCard } from '../src/components/dashboard/BindCard.tsx';
 import { MarketCard } from '../src/components/dashboard/MarketCard.tsx';
 import { FriendsCard } from '../src/components/dashboard/FriendsCard.tsx';
+import { InviteLanding } from '../src/components/InviteLanding.tsx';
 import { encodeMigrateCode } from '../src/lib/migrate-code.ts';
 import type {
   AdminUser,
@@ -80,10 +81,16 @@ function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
     adminRetainLogs: async (): Promise<string[] | null> => [],
     listFriends: async () => [],
     addFriend: async () => null,
+    deleteFriend: async () => true,
+    getPrivacy: async () => true,
+    setPrivacy: async () => true,
     getBoundCup: async () => null,
     bindCup: async () => ({ ok: true }),
     unbindCup: async () => ({ ok: true }),
     getTeam: async (): Promise<TeamState | null> => ({ members: 1, friends: 0, streak: 0, days: [] }),
+    mintInvite: async () => null,
+    getInvite: async () => ({ invited_count: 0, invited_by: null }),
+    previewInvite: async () => null,
   };
   return { ...base, ...over };
 }
@@ -597,6 +604,128 @@ test('FriendsCard:未登录 → 无加好友表单', async () => {
   );
   await flush();
   assert.match(host.textContent ?? '', /登录后才能加好友/);
+  unmount();
+});
+
+// ── 邀请码(P4.3)──────────────────────────────────────────────
+
+test('FriendsCard:真实点击「生成邀请链接」调 mintInvite 并显示出 invite= 链接', async () => {
+  let minted = 0;
+  const soc = fakeSocial({
+    mintInvite: async () => {
+      minted++;
+      return 'ABCDEFGHJK';
+    },
+  });
+  const { host, unmount } = mount(createElement(FriendsCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  click(findButton(host, '生成邀请链接')!);
+  await flush();
+  assert.equal(minted, 1);
+  const link = host.querySelector('input[aria-label="邀请链接"]') as HTMLInputElement;
+  assert.ok(link, '应出现邀请链接框');
+  assert.equal(new URL(link.value).searchParams.get('invite'), 'ABCDEFGHJK');
+  assert.ok(findButton(host, '复制'), '出链接后带复制按钮');
+  unmount();
+});
+
+test('FriendsCard:未登录 → 无生成邀请链接按钮(铸码要会话)', async () => {
+  const { host, unmount } = mount(
+    createElement(FriendsCard, { social: fakeSocial(), enabled: true, user: null }),
+  );
+  await flush();
+  assert.equal(findButton(host, '生成邀请链接'), undefined);
+  unmount();
+});
+
+// ── 删好友 / 隐私开关(P4.4)────────────────────────────────────
+
+test('FriendsCard:真实点击好友行「删」调 deleteFriend 并移除该行', async () => {
+  const seen: string[] = [];
+  const friend: FriendView = { user_id: 'u2', nickname: '阿蓝', traits: null, streak: null };
+  const soc = fakeSocial({
+    listFriends: async () => [friend],
+    deleteFriend: async (id) => {
+      seen.push(id);
+      return true;
+    },
+  });
+  const { host, unmount } = mount(createElement(FriendsCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  assert.match(host.textContent ?? '', /阿蓝/);
+  click(host.querySelector('button[aria-label="删除好友 阿蓝"]')!);
+  await flush();
+  assert.deepEqual(seen, ['u2']);
+  assert.ok(!(host.textContent ?? '').includes('阿蓝'), '删后该行消失');
+  unmount();
+});
+
+test('FriendsCard:隐私开关默认勾选;真实点击 → 调 setPrivacy(false)', async () => {
+  const seen: boolean[] = [];
+  const soc = fakeSocial({
+    getPrivacy: async () => true,
+    setPrivacy: async (v) => {
+      seen.push(v);
+      return v;
+    },
+  });
+  const { host, unmount } = mount(createElement(FriendsCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  const box = host.querySelector('input[aria-label="好友可见"]') as HTMLInputElement;
+  assert.ok(box, '应有隐私开关');
+  assert.equal(box.checked, true, '默认可见');
+  click(box);
+  await flush();
+  assert.deepEqual(seen, [false], '点一下 → 关掉可见');
+  assert.equal(box.checked, false, '开关落到关');
+  unmount();
+});
+
+// ── 落地页(P4.3)────────────────────────────────────────────────
+
+test('InviteLanding:免注册显示邀请人昵称 + 性格;注册表单默认开在注册态', async () => {
+  const soc = fakeSocial({
+    previewInvite: async () => ({ valid: true, inviter: { nickname: '阿蓝', traits: T, streak: 3 } }),
+  });
+  const { host, unmount } = mount(
+    createElement(InviteLanding, { social: soc, session: fakeSession(), code: 'ABCDEFGHJK' }),
+  );
+  await flush();
+  assert.match(host.textContent ?? '', /阿蓝/);
+  assert.match(host.textContent ?? '', /得意洋洋/);
+  assert.match(host.textContent ?? '', /ABCDEFGHJK/, '显示邀请码');
+  assert.ok(findButton(host, '注册'), '注册入口在');
+  unmount();
+});
+
+test('InviteLanding:无效码 → 如实说,注册入口照旧', async () => {
+  const soc = fakeSocial({ previewInvite: async () => ({ valid: false, inviter: null }) });
+  const { host, unmount } = mount(
+    createElement(InviteLanding, { social: soc, session: fakeSession(), code: 'BAD' }),
+  );
+  await flush();
+  assert.match(host.textContent ?? '', /无效/);
+  assert.ok(findButton(host, '注册'), '码无效也能注册');
+  unmount();
+});
+
+test('AccountCard:defaultMode=register + invite → 真实点击注册时带上邀请码', async () => {
+  const seen: { invite?: string }[] = [];
+  const session = fakeSession({
+    register: async (_e, _p, _n, invite) => {
+      seen.push({ ...(invite !== undefined ? { invite } : {}) });
+      return { ok: true, user: USER };
+    },
+  });
+  const { host, unmount } = mount(
+    createElement(AccountCard, { session, enabled: true, invite: 'ABCDEFGHJK', defaultMode: 'register' }),
+  );
+  const inputs = host.querySelectorAll('input');
+  typeInto(inputs[0] as HTMLInputElement, 'a@b.c');
+  typeInto(inputs[1] as HTMLInputElement, 'pw123456');
+  click(findButton(host, '注册')!);
+  await flush();
+  assert.deepEqual(seen, [{ invite: 'ABCDEFGHJK' }]);
   unmount();
 });
 

@@ -62,10 +62,15 @@ export function buildPetCard(traits: TraitRecord, nickname: string, dateLabel: s
 }
 
 /**
- * 分享卡模型 —— 组队 streak(#74)。
+ * 分享卡模型 —— 组队 streak(#74 + P4.3 带归属)。
  * 只带"共同达标天数 + 成员数",不带任何人的原始饮水曲线(隐私口径同迁移码)。
+ * `invite`(P4.3)给定时,底部压一行邀请码 —— 收到卡的人据此打开落地页(免注册)。
  */
-export function buildShareCard(team: { streak: number; members: number; days: string[] }, dateLabel: string): CardModel {
+export function buildShareCard(
+  team: { streak: number; members: number; days: string[] },
+  dateLabel: string,
+  invite?: string | null,
+): CardModel {
   const members = Math.max(0, Math.floor(team.members));
   const title = members >= 2 ? '我们的杯子' : '我的杯子';
   const lines: CardLine[] = [
@@ -76,6 +81,11 @@ export function buildShareCard(team: { streak: number; members: number; days: st
     const first = team.days[0]!;
     const last = team.days[team.days.length - 1]!;
     lines.push({ role: 'body', text: `${first} → ${last}` });
+  }
+  const code = invite?.trim();
+  if (code) {
+    lines.push({ role: 'body', text: `邀请码  ${code}` });
+    lines.push({ role: 'body', text: `打开链接领一只能一起组队的杯子` });
   }
   return { title, lines, footnote: `cup-agent · ${dateLabel}` };
 }

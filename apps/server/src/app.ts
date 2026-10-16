@@ -352,6 +352,7 @@ export function createApp(opts: AppOptions = {}): App {
     requireClaim: opts.requireClaim,
     cupLlm,
     activePack,
+    invite,
     serverLogs,
     pgPool: pool ?? undefined,
     retention: opts.retention,

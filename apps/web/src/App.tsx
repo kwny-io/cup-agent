@@ -21,6 +21,8 @@ import { FloatingCup } from './components/FloatingCup.tsx';
 import { ChatPanel } from './components/ChatPanel.tsx';
 import { CommunityView } from './components/CommunityView.tsx';
 import { MemoriesView } from './components/MemoriesView.tsx';
+import { InviteLanding } from './components/InviteLanding.tsx';
+import { inviteCodeFromSearch } from './lib/invite.ts';
 import { AdminPanel } from './components/AdminPanel.tsx';
 import { LogsView } from './components/LogsView.tsx';
 
@@ -125,6 +127,13 @@ export function App() {
   useEffect(() => {
     if (chatVisible) setChatUnread(false);
   }, [chatVisible]);
+
+  // 邀请落地页(P4.3):URL 带 ?invite=<code> 且尚未登录 → 先看邀请人的杯子场景再注册。
+  // 已登录(如自己点开自己的分享链接)则不打断,照常进 App。
+  const inviteCode = inviteCodeFromSearch(location.search);
+  if (inviteCode && !session.user && !session.loading) {
+    return <InviteLanding social={social} session={session} code={inviteCode} />;
+  }
 
   return (
     <div className="flex h-full flex-col">

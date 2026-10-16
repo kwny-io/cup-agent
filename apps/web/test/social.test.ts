@@ -406,6 +406,120 @@ test('addFriend / getTeam / listFriends:形状对不对', async () => {
   assert.deepEqual(team?.days, ['2026-10-10', '2026-10-12']);
 });
 
+// ── P4.3 邀请码 ─────────────────────────────────────────────────
+
+test('register:带 invite → 体里有 invite;不带 / 空串 → 不带字段', async () => {
+  const cap: Cap[] = [];
+  const impl = router(
+    [{ match: (u) => u.endsWith('/auth/register'), json: { token: 't', user: { user_id: 'u1', email: 'a@b.c', nickname: '', role: 'user' } } }],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+
+  await s.register('a@b.c', 'pw123456', '绿', 'ABCDEFGHJK');
+  assert.equal(cap[0]?.body, JSON.stringify({ email: 'a@b.c', password: 'pw123456', nickname: '绿', invite: 'ABCDEFGHJK' }));
+
+  await s.register('a@b.c', 'pw123456');
+  assert.equal(cap[1]?.body, JSON.stringify({ email: 'a@b.c', password: 'pw123456' }), '没码不带 invite 字段');
+
+  await s.register('a@b.c', 'pw123456', undefined, '');
+  assert.equal(cap[2]?.body, JSON.stringify({ email: 'a@b.c', password: 'pw123456' }), '空串 ≠ 有码');
+});
+
+test('mintInvite:POST /social/invite → 解出 code;失败 / 空码 → null', async () => {
+  const cap: Cap[] = [];
+  const impl = router(
+    [{ match: (u, m) => u.includes('/social/invite') && !u.includes('/invite/') && m === 'POST', json: { code: 'ABCDEFGHJK' } }],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.equal(await s.mintInvite(), 'ABCDEFGHJK');
+  assert.equal(cap[0]?.method, 'POST');
+  assert.equal(cap[0]?.url, `${BASE}/social/invite`);
+
+  const bad = router([{ match: (u) => u.includes('/social/invite'), json: { code: '' } }]);
+  const s2 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: bad, storage: memStorage() });
+  assert.equal(await s2.mintInvite(), null, '空码 → null');
+
+  const off = (() => Promise.reject(new TypeError('x'))) as unknown as typeof fetch;
+  const s3 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: off, storage: memStorage() });
+  assert.equal(await s3.mintInvite(), null);
+});
+
+test('getInvite:GET /social/invite → {invited_count, invited_by};缺字段有兜底', async () => {
+  const impl = router([
+    { match: (u, m) => u.includes('/social/invite') && m === 'GET', json: { minted: [], invited_count: 2, invited_by: 'u9' } },
+  ]);
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.deepEqual(await s.getInvite(), { invited_count: 2, invited_by: 'u9' });
+
+  const sparse = router([{ match: (u) => u.includes('/social/invite'), json: {} }]);
+  const s2 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: sparse, storage: memStorage() });
+  assert.deepEqual(await s2.getInvite(), { invited_count: 0, invited_by: null }, '缺字段兜底');
+});
+
+test('previewInvite:GET /social/invite/:code(公开)→ 解出 inviter;无效码 → valid:false', async () => {
+  const cap: Cap[] = [];
+  const impl = router(
+    [
+      {
+        match: (u) => u.includes('/social/invite/CODE123'),
+        json: { valid: true, inviter: { nickname: '阿蓝', traits: { disposition: 'smug', level: 0.8, streak: 3, warmth: 0.5, refill_habit: 0.4, updated_at: 1 }, streak: 3 } },
+      },
+      { match: (u) => u.includes('/social/invite/BAD'), json: { valid: false, inviter: null } },
+    ],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+
+  const p = await s.previewInvite('CODE123');
+  assert.equal(p?.valid, true);
+  assert.equal(p?.inviter?.nickname, '阿蓝');
+  assert.equal(p?.inviter?.streak, 3);
+  assert.equal(cap[0]?.url, `${BASE}/social/invite/CODE123`);
+  assert.equal(cap[0]?.method, 'GET');
+  // 公开端点:无令牌时不该带 Authorization(未被登录会话污染)
+  assert.equal(cap[0]?.headers['authorization'], undefined);
+
+  const bad = await s.previewInvite('BAD');
+  assert.deepEqual(bad, { valid: false, inviter: null });
+});
+
+// ── P4.4 删好友 / 隐私开关 ──────────────────────────────────────
+
+test('deleteFriend:DELETE /social/friends/:id(URL 转义);失败 → false', async () => {
+  const cap: Cap[] = [];
+  const impl = router(
+    [{ match: (u, m) => u.includes('/social/friends/') && m === 'DELETE', json: { ok: true } }],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.equal(await s.deleteFriend('u2'), true);
+  assert.equal(cap[0]?.method, 'DELETE');
+  assert.equal(cap[0]?.url, `${BASE}/social/friends/u2`);
+
+  const off = (() => Promise.reject(new TypeError('x'))) as unknown as typeof fetch;
+  const s2 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: off, storage: memStorage() });
+  assert.equal(await s2.deleteFriend('u2'), false);
+});
+
+test('getPrivacy / setPrivacy:GET 解出 visible;PUT 带 {visible} 体', async () => {
+  const cap: Cap[] = [];
+  const impl = router(
+    [
+      { match: (u, m) => u.includes('/social/privacy') && m === 'GET', json: { visible: true } },
+      { match: (u, m) => u.includes('/social/privacy') && m === 'PUT', json: { visible: false } },
+    ],
+    cap,
+  );
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.equal(await s.getPrivacy(), true);
+  assert.equal(await s.setPrivacy(false), false);
+  const put = cap.find((c) => c.method === 'PUT');
+  assert.equal(put?.url, `${BASE}/social/privacy`);
+  assert.equal(put?.body, JSON.stringify({ visible: false }));
+});
+
 test('logout:清掉本地令牌', async () => {
   const store = memStorage();
   store.setItem('cup.session', 'tok');

@@ -13,8 +13,20 @@ import type { Session } from '../../data/useSession.ts';
 
 type Mode = 'login' | 'register';
 
-export function AccountCard({ session, enabled }: { session: Session; enabled: boolean }) {
-  const [mode, setMode] = useState<Mode>('login');
+export function AccountCard({
+  session,
+  enabled,
+  invite,
+  defaultMode = 'login',
+}: {
+  session: Session;
+  enabled: boolean;
+  /** 分享卡邀请码(P4.3):落地页注册时带上 → 后端记一条归属边 */
+  invite?: string;
+  /** 初始形态;落地页直接开在注册(默认登录) */
+  defaultMode?: Mode;
+}) {
+  const [mode, setMode] = useState<Mode>(defaultMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [nickname, setNickname] = useState('');
@@ -84,7 +96,7 @@ export function AccountCard({ session, enabled }: { session: Session; enabled: b
       const out =
         mode === 'login'
           ? await session.login(email.trim(), password)
-          : await session.register(email.trim(), password, nickname.trim() || undefined);
+          : await session.register(email.trim(), password, nickname.trim() || undefined, invite);
       if (!out.ok) {
         setError(
           out.error ??

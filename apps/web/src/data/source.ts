@@ -555,6 +555,27 @@ export interface TeamState {
   days: string[];
 }
 
+/**
+ * 我的邀请码概览(P4.3)—— `GET /social/invite`。
+ *   · invited_count 我拉来的被邀请人数(转化率分子);
+ *   · invited_by    我的归属边指向的邀请人 id(可查);无 → null。
+ */
+export interface InviteSummary {
+  invited_count: number;
+  invited_by: string | null;
+}
+
+/**
+ * 邀请码落地页预览(P4.3)—— `GET /social/invite/:code`(**公开,免登录**)。
+ * 回邀请人的**昵称 + 一眼性格 + streak**(正是分享卡上已画着的场景);邀请人关掉
+ * 可见性 / 没绑杯时 traits/streak 为 null。email / cup_id 恒不出。
+ * `valid:false` = 码不存在 / 形状不合法 / 邀请人已注销。
+ */
+export interface InvitePreview {
+  valid: boolean;
+  inviter: { nickname: string; traits: TraitRecord | null; streak: number | null } | null;
+}
+
 /** 登录 / 注册结果;失败带可区分原因(与 ask 同款)与后端人话 */
 export type AuthOutcome =
   | { ok: true; user: PublicUser }
@@ -578,7 +599,8 @@ export type BindOutcome = { ok: true } | { ok: false; error?: string };
 export interface SocialApi {
   // ── 会话 ──
   me(): Promise<PublicUser | null>;
-  register(email: string, password: string, nickname?: string): Promise<AuthOutcome>;
+  /** 注册;`invite` 为分享卡邀请码(P4.3)—— 带上则后端记一条归属边(尽力而为,不影响注册成败)。 */
+  register(email: string, password: string, nickname?: string, invite?: string): Promise<AuthOutcome>;
   login(email: string, password: string): Promise<AuthOutcome>;
   logout(): Promise<void>;
   /** 是否已有会话令牌(同步判据,给 UI 决定显示登录还是登出) */
@@ -644,6 +666,12 @@ export interface SocialApi {
   // ── 杯子社交(#74)──
   listFriends(): Promise<FriendView[]>;
   addFriend(email: string): Promise<FriendView | null>;
+  /** 删好友(P4.4,G5「只能加不能删」的出口);无向边,任一方向调都清那条边;失败 → false。 */
+  deleteFriend(friendUserId: string): Promise<boolean>;
+  /** 我的可见性开关(P4.4);缺省 true。失败 → null(= 未知,UI 不擅自翻面)。 */
+  getPrivacy(): Promise<boolean | null>;
+  /** 设我的可见性开关;关掉 → 好友看我只有昵称(traits/streak 为 null)。失败 → null。 */
+  setPrivacy(visible: boolean): Promise<boolean | null>;
   /** 我当前绑的杯子;没绑 / 未登录 → null */
   getBoundCup(): Promise<string | null>;
   /** 绑定杯子;可信绑定开关(--require-claim)开时,缺/错码 → {ok:false, error:'杯子绑定凭证无效'} */
@@ -651,6 +679,14 @@ export interface SocialApi {
   /** 解绑我的杯子(没绑也算成功)*/
   unbindCup(): Promise<BindOutcome>;
   getTeam(): Promise<TeamState | null>;
+
+  // ── 分享卡邀请码 / 归属边(P4.3)──
+  /** 铸一枚新邀请码(POST /social/invite);失败 → null。 */
+  mintInvite(): Promise<string | null>;
+  /** 我的邀请概览(拉来几人 + 我由谁邀请);失败 → null。 */
+  getInvite(): Promise<InviteSummary | null>;
+  /** 落地页预览:某枚码的邀请人昵称(**公开,免登录**);无效码 → null。 */
+  previewInvite(code: string): Promise<InvitePreview | null>;
 }
 
 export interface DataSourceEvents {

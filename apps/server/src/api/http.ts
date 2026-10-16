@@ -48,6 +48,7 @@ import { NullChatLlm } from '../core/chat/mock.ts';
 import type { ChatLlm } from '../core/chat/types.ts';
 import { isCupLlmProvider, type CupLlmService } from '../core/cup-llm.ts';
 import type { CupActivePackStore } from '../core/active-pack.ts';
+import { normalizeInviteCode, type InviteStore } from '../core/invite.ts';
 import { MemoryChatStore, type ChatStore } from '../core/chat/memory.ts';
 import { ingestEnvelope } from '../ingest/http-adapter.ts';
 import { MemoryAccountsStore } from '../core/social/accounts.ts';
@@ -123,6 +124,12 @@ export interface ApiDeps {
    * 不给 → 该口回 503(不装死,也不静默丢配置)。包全文仍从 `accounts.packById` 取。
    */
   activePack?: CupActivePackStore;
+  /**
+   * 分享卡邀请码 / 归属边(D4,P4.3;存储见 core/invite.ts)。给了则开放
+   * `/social/invite`(铸码 + 查我的归因)与 `/social/invite/:code`(公开预览)。
+   * 不给 → 铸码口回 503(不装死);注册带 invite 时也不记账(未配 → 静默忽略,不挡注册)。
+   */
+  invite?: InviteStore;
   /**
    * 绑定杯子须出示一次性 claim code(默认 false → 只校验 cup_id 形状,与旧行为一致)。
    * 设备/模拟器两半验收后由用户开。
@@ -245,6 +252,14 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
   if (path === '/social/privacy') {
     return await socialPrivacyRoute(req, res, deps);
   }
+  // 邀请码(P4.3):铸/查要登录会话;公开预览(:code)无需登录(落地页先看后注册)。
+  if (path === '/social/invite') {
+    return await socialInviteRoute(req, res, deps);
+  }
+  const invitePreview = path.match(/^\/social\/invite\/([^/]+)$/);
+  if (invitePreview) {
+    return await socialInvitePreviewRoute(res, deps, decodeURIComponent(invitePreview[1]!));
+  }
   if (path === '/social/cup') {
     return await socialCupBindRoute(req, res, deps);
   }
@@ -344,6 +359,10 @@ async function authRoute(
       nickname: typeof b.nickname === 'string' ? b.nickname : undefined,
     });
     if (!r.ok) return send(res, r.status, { error: r.error });
+    // P4.3 归因:注册带 invite 码 → 记一条首触归属边(谁邀请的谁)。
+    // 归因是**尽力而为**:码形状不对 / 查无此人 / 自邀 / 未配 store → 一律静默跳过,
+    // 绝不因归因失败而把注册打红(注册本身已成功,归属边是统计副产品)。
+    await attributeInvite(deps, r.user.user_id, b.invite);
     return send(res, 200, { token: r.token, user: r.user });
   }
 
@@ -822,6 +841,96 @@ async function socialPrivacyRoute(
   if (typeof raw !== 'boolean') return send(res, 400, { error: 'visible 必须是布尔' });
   await deps.accounts!.setVisible(me.user_id, raw);
   send(res, 200, { visible: raw });
+}
+
+// ── 分享卡邀请码 / 归属边(D4,P4.3)───────────────────────────────
+//
+// 单边裂变:邀请人铸码 → 分享卡嵌 `?invite=<code>` → 被邀请人打开落地页(免注册)
+// 看到邀请人的杯子场景 → 注册带上 invite → 记一条归属边。**不要求互为好友**(那是 v1)。
+// 编码形状与规范化全在 core/invite.ts(Crockford 10 位,可读可粘贴);本层只做 HTTP 形状。
+
+/**
+ * 注册归因(**尽力而为,绝不打红注册**)—— 码规范化 → 查邀请人 → 记首触归属边。
+ * 跳过条件(全静默):未配 invite store / 码形状不合法 / 查无此码 / 邀请人不存在 /
+ * 邀请人就是被邀请人本人(自邀不算)。
+ */
+async function attributeInvite(deps: ApiDeps, inviteeUserId: string, rawCode: unknown): Promise<void> {
+  if (!deps.invite) return;
+  if (typeof rawCode !== 'string') return;
+  const code = normalizeInviteCode(rawCode);
+  if (!code) return;
+  const inviterUserId = await deps.invite.owner(code);
+  if (!inviterUserId || inviterUserId === inviteeUserId) return;
+  await deps.invite.recordJoin(inviteeUserId, inviterUserId, code);
+}
+
+/**
+ * POST /social/invite → 200 { code }(铸一枚新邀请码;需登录会话)
+ * GET  /social/invite → 200 { minted: string[], invited_count: number, invited_by: string|null }
+ *   · minted        我铸过的码(可对账"哪次分享");当前 store 未提供反查,故恒回 [](见下)。
+ *   · invited_count 我拉来的被邀请人数(转化率分子)。
+ *   · invited_by    我的归属边指向的邀请人 id(可查);无 → null。
+ * 未配 invite store → 503(不装死)。
+ */
+async function socialInviteRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
+  if (!me) return;
+  const store = deps.invite;
+  if (!store) return send(res, 503, { error: '本实例未启用邀请码' });
+  const method = req.method ?? 'GET';
+
+  if (method === 'POST') {
+    const code = await store.mint(me.user_id);
+    return send(res, 200, { code });
+  }
+  if (method !== 'GET') return send(res, 405, { error: 'use GET or POST' });
+
+  const [invited, join] = await Promise.all([
+    store.invitedBy(me.user_id),
+    store.joinOf(me.user_id),
+  ]);
+  send(res, 200, {
+    // 反查"我铸过哪些码"要一张 code→inviter 的反向索引,当前 store 无此口 → 恒 []。
+    // 铸码时前端就地记住这一枚即可(POST 返回码,前端立即可分享);不让后端为统计加口。
+    minted: [] as string[],
+    invited_count: invited.length,
+    invited_by: join?.inviter_user_id ?? null,
+  });
+}
+
+/**
+ * GET /social/invite/:code → 200 { valid, inviter: { nickname, traits, streak } | null }(公开,免登录)
+ *
+ * 落地页**先看后注册**:被邀请人打开链接时不带会话,也要能看到这张卡对应的场景
+ * (设计稿 §3.3:「那只杯子的 streak + 一眼性格」)。这些正是**分享卡上已画着的东西**
+ * (邀请人自己选着分享的),故对持码人不成新暴露。
+ *
+ * **尊重邀请人的隐私开关**(§3.4,与 `friendView` 同口径):邀请人关掉 `visible` /
+ * 没绑杯 → 只回昵称,traits/streak 为 null。email / cup_id 恒不出。
+ * 码形状不合法 / 查无此码 / 邀请人已注销 → `{ valid:false, inviter:null }`(200,不 404 ——
+ * 落地页据 valid 渲染,不当错误)。
+ */
+async function socialInvitePreviewRoute(
+  res: ServerResponse,
+  deps: ApiDeps,
+  rawCode: string,
+): Promise<void> {
+  const code = normalizeInviteCode(rawCode);
+  if (!code || !deps.invite) return send(res, 200, { valid: false, inviter: null });
+  const inviterUserId = await deps.invite.owner(code);
+  if (!inviterUserId) return send(res, 200, { valid: false, inviter: null });
+  const acct = await deps.accounts!.accountById(inviterUserId);
+  if (!acct) return send(res, 200, { valid: true, inviter: null });
+  // 关掉可见 / 没绑杯 → 只给昵称(与 friendView 的 gate 一致)
+  if (!acct.cup_id || acct.visible === false) {
+    return send(res, 200, { valid: true, inviter: { nickname: acct.nickname, traits: null, streak: null } });
+  }
+  const { traits, streak } = await traitsForCup(deps, acct.cup_id);
+  send(res, 200, { valid: true, inviter: { nickname: acct.nickname, traits, streak } });
 }
 
 /**

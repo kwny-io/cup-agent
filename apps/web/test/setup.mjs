@@ -37,6 +37,7 @@ globalThis.Event = window.Event;
 globalThis.MouseEvent = window.MouseEvent;
 globalThis.KeyboardEvent = window.KeyboardEvent;
 globalThis.getComputedStyle = window.getComputedStyle.bind(window);
+globalThis.location = window.location;
 globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window);
 globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
 globalThis.localStorage = window.localStorage;
