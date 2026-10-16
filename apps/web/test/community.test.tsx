@@ -69,6 +69,7 @@ function fakeSocial(over: Partial<SocialApi> = {}): SocialApi {
     submitPack: async (): Promise<PersonaPack | null> => null,
     subscribePack: async () => true,
     listSubscriptions: async () => [],
+    getMarketOpen: async () => true,
     getActivePack: async (): Promise<PersonaPack | null> => null,
     setActivePack: async (): Promise<PersonaPack | null> => null,
     clearActivePack: async () => true,
@@ -571,6 +572,37 @@ test('MarketCard:包名为空 → 前端拦下,不投稿', async () => {
   click(findButton(host, '投稿')!);
   await flush();
   assert.equal(calls, 0);
+  unmount();
+});
+
+test('MarketCard:市场关闭(D3 灰度)→ 显示「暂未开放」,无货架/投稿入口', async () => {
+  let listCalls = 0;
+  const soc = fakeSocial({
+    getMarketOpen: async () => false,
+    listPacks: async (): Promise<PersonaPack[]> => {
+      listCalls++;
+      return [];
+    },
+  });
+  const { host, unmount } = mount(createElement(MarketCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  assert.match(host.textContent ?? '', /暂未开放/);
+  assert.equal(findButton(host, '投稿'), undefined, '关闭时不给投稿入口');
+  assert.equal(listCalls, 0, '关闭时不再拉货架(后端本就空)');
+  unmount();
+});
+
+test('MarketCard:开关取不到(null)→ 退回既有加载路径,仍渲染货架', async () => {
+  const soc = fakeSocial({
+    getMarketOpen: async () => null,
+    listPacks: async (): Promise<PersonaPack[]> => [
+      { pack_id: 'p1', author_user_id: 'u2', name: '温柔包', tone: '', thresholds: {}, wave: {}, lines: [], status: 'approved', created_at: 1 },
+    ],
+  });
+  const { host, unmount } = mount(createElement(MarketCard, { social: soc, enabled: true, user: USER }));
+  await flush();
+  assert.match(host.textContent ?? '', /温柔包/, '未知开关 → 不判关,正常显示');
+  assert.match(host.textContent ?? '', /登录后才能投稿|投稿/, '投稿入口仍在');
   unmount();
 });
 

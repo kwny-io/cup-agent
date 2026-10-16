@@ -135,6 +135,13 @@ export interface ApiDeps {
    * 设备/模拟器两半验收后由用户开。
    */
   requireClaim?: boolean;
+  /**
+   * 人格市场开放开关(D3 灰度;env `CUP_MARKET_OPEN`,**未设=关**)。
+   * 关时:`GET /market/packs`(非管理员)回**空货架**、`POST /market/packs`(投稿)回 503;
+   * `GET /market/status` 回 `{open:false}` 供前端显示「暂未开放」。
+   * 管理员带 `?status=` 的审读口**不受开关影响**(后台仍可审核上架)。
+   */
+  marketOpen?: boolean;
   /** 服务日志读写口(结构化日志落库);不给 → `/admin/logs` 返回空表(服务照常) */
   serverLogs?: ServerLogStore;
   /** 保留策略选项(psql 日志/遥测/事件保留天数);给 `POST /admin/logs/retain` 用 */
@@ -205,6 +212,9 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
   }
 
   // ── 人格市场(UGC;需登录会话,不走 x-api-key)──
+  if (path === '/market/status') {
+    return marketStatusRoute(res, deps);
+  }
   if (path === '/market/packs') {
     return await marketPacksRoute(req, res, deps, url);
   }
@@ -479,6 +489,9 @@ function packView(p: PersonaPack): PersonaPack {
 /**
  * GET  /market/packs           → 200 { packs: approved[] }(已上架;需登录)
  * POST /market/packs  {…draft} → 200 { pack }(投稿 → status:'pending';需登录)
+ *
+ * 市场开关(D3 灰度;deps.marketOpen,**未设=关**):关时公开货架(未带 `?status=`)回**空数组**、
+ * 投稿回 503。管理员带 `?status=` 的审读口**不受开关影响**(后台仍能审核上架,靠 `/admin/packs` 或本口)。
  */
 async function marketPacksRoute(
   req: IncomingMessage,
@@ -495,15 +508,20 @@ async function marketPacksRoute(
     const want = url.searchParams.get('status');
     const status: PackStatus | undefined =
       want === 'pending' || want === 'approved' || want === 'rejected' ? want : undefined;
-    const statusFilter: PackStatus = status ?? 'approved';
     if (status && user.role !== 'admin') {
       return send(res, 403, { error: '需要管理员权限' });
     }
+    // 市场关闭:公开货架一律空(管理员带 ?status= 的审读口不在此列,不受开关影响)。
+    if (deps.marketOpen !== true && !status) {
+      return send(res, 200, { packs: [] });
+    }
+    const statusFilter: PackStatus = status ?? 'approved';
     const packs = await deps.accounts!.listPacks(statusFilter);
     return send(res, 200, { packs: packs.map(packView) });
   }
 
   if (method !== 'POST') return send(res, 405, { error: 'use GET or POST' });
+  if (deps.marketOpen !== true) return send(res, 503, { error: '市场未开放' });
 
   const body = await readJson(req);
   const r = normalizePack(body);
@@ -511,6 +529,14 @@ async function marketPacksRoute(
   const pack = makePack(r.draft, user.user_id, Date.now());
   await deps.accounts!.createPack(pack);
   send(res, 200, { pack: packView(pack) });
+}
+
+/**
+ * GET /market/status → 200 { open: boolean }(**免登录**;供前端在关时显示「暂未开放」)。
+ * 只回一个开关布尔,不含任何账号/包信息,故不设会话闸 —— 未登录也能正确渲染关闭态。
+ */
+function marketStatusRoute(res: ServerResponse, deps: ApiDeps): void {
+  send(res, 200, { open: deps.marketOpen === true });
 }
 
 /** POST /market/packs/:id/subscribe → 200 { subscribed, pack_id };包不存在 / 未上架 → 404 */

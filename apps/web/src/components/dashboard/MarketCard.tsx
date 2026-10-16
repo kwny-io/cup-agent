@@ -35,9 +35,18 @@ export function MarketCard({
   const [subscribed, setSubscribed] = useState<Set<string>>(new Set());
   /** 我这只杯当前穿的那件(未登录 / 未装 → null) */
   const [activeId, setActiveId] = useState<string | null>(null);
+  /** 市场开放开关(D3 灰度);null = 未知(取不到,退回既有加载路径,不擅自判关) */
+  const [open, setOpen] = useState<boolean | null>(null);
 
   const reload = useCallback(async () => {
     if (!social) return;
+    // 先问开关:关着就直接显示「暂未开放」,不必再拉(后端货架本就空)。
+    const isOpen = await social.getMarketOpen();
+    setOpen(isOpen);
+    if (isOpen === false) {
+      setLoaded(true);
+      return;
+    }
     const list = await social.listPacks();
     setPacks(list.map(sanitizePack));
     // 登录后回读「我订过哪些」+「我那只杯穿着哪件」——卡片加载即正确显示(不是点过才算)。
@@ -58,6 +67,17 @@ export function MarketCard({
       <Card title="人格市场" hint="需连后端">
         <p className="py-4 text-center text-xs text-cup-ink-soft">
           人格市场要连后端(?cloud=1)
+        </p>
+      </Card>
+    );
+  }
+
+  // 市场关闭(D3 灰度):整卡换成「暂未开放」——不给浏览、不给投稿入口。
+  if (loaded && open === false) {
+    return (
+      <Card title="人格市场" hint="暂未开放">
+        <p className="py-6 text-center text-xs text-cup-ink-soft">
+          人格市场暂未开放 —— 敬请期待
         </p>
       </Card>
     );

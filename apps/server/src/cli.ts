@@ -44,6 +44,8 @@ interface Args {
   allowUnauth: boolean;
   /** --require-claim:绑定杯子须出示设备一次性 claim code(可信绑定;**默认开**,CUP_REQUIRE_CLAIM=0|false 关) */
   requireClaim: boolean;
+  /** 人格市场开放开关(D3 灰度;**默认关**,CUP_MARKET_OPEN=1|true 开) */
+  marketOpen: boolean;
   /** 画像蒸馏阈值(自上次蒸馏后新增多少轮才再蒸);null = 用 distill.ts 默认值 */
   profileMinTurns: number | null;
   /** 日界时区(IANA,如 Asia/Shanghai);null = 服务器本地时区 */
@@ -67,6 +69,8 @@ function parseArgs(argv: string[]): Args {
     allowUnauth: false,
     // 可信绑定默认开(绑定须出示设备一次性码);仅显式 `CUP_REQUIRE_CLAIM=0/false` 才关。
     requireClaim: !(process.env.CUP_REQUIRE_CLAIM === '0' || process.env.CUP_REQUIRE_CLAIM === 'false'),
+    // 人格市场灰度默认**关**(未设=关);仅显式 `CUP_MARKET_OPEN=1/true` 才开。
+    marketOpen: process.env.CUP_MARKET_OPEN === '1' || process.env.CUP_MARKET_OPEN === 'true',
     profileMinTurns: null,
     tz: process.env.CUP_TZ ?? null,
     logLevel: parseLogLevel(process.env.CUP_LOG_LEVEL),
@@ -150,6 +154,11 @@ function parseArgs(argv: string[]): Args {
         console.log('');
         console.log('账号 / 会话(多用户地基;POST /auth/register|login|logout,GET /auth/me):');
         console.log('  CUP_ADMIN_EMAIL=<邮箱>  该邮箱注册即得管理员(市场审核后台);不设则无管理员。');
+        console.log('');
+        console.log('人格市场灰度(D3;**默认关**):');
+        console.log('  CUP_MARKET_OPEN=1|true  开放市场(货架可读、可投稿);');
+        console.log('  不设 / =0|false         关:GET /market/packs 回空、投稿 503、前端显示「暂未开放」。');
+        console.log('  管理员带 ?status= 的审读口不受开关影响;GET /market/status 回当前开关。');
         console.log('');
         console.log('可信绑定(风险 R18;绑定杯子须出示设备一次性 claim code):');
         console.log('  --require-claim / CUP_REQUIRE_CLAIM=1  开启(**默认已开**)。');
@@ -349,6 +358,7 @@ async function main(): Promise<void> {
     reviewerEmails: emailList(process.env.CUP_REVIEWER_EMAILS),
     retention: retentionOptions(),
     requireClaim: args.requireClaim,
+    marketOpen: args.marketOpen,
   });
 
   // 官方人格包种子(P4-D3 冷启动):幂等,已存在则跳过。放这里而非 createApp 内 ——
@@ -396,6 +406,7 @@ async function main(): Promise<void> {
     `  主动开口: ${args.proactive ? `开(照看 ${args.cups.join(', ') || '无 —— 加 --cup <id>'})` : '关(--proactive 开启)'}`,
   );
   console.log(`  可信绑定: ${args.requireClaim ? '开(默认;绑定须设备一次性 claim code)' : '关(CUP_REQUIRE_CLAIM=0|false 显式关闭,仅本地开发)'}`);
+  console.log(`  人格市场: ${args.marketOpen ? '开(CUP_MARKET_OPEN=1|true)' : '关(默认;CUP_MARKET_OPEN=1|true 开启;关时货架空、投稿 503,前端显示「暂未开放」)'}`);
   if (pgUrl) {
     const opt = retentionOptions();
     const onBoot = process.env.CUP_RETENTION === '1' || process.env.CUP_RETENTION === 'true';

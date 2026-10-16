@@ -640,6 +640,12 @@ export interface SocialApi {
   subscribePack(packId: string): Promise<boolean>;
   /** 我订过的包 id 列表(只回已上架的);失败 → []。用于市场卡片标「已订阅」。 */
   listSubscriptions(): Promise<string[]>;
+  /**
+   * 市场是否开放(D3 灰度开关,`GET /market/status`,免登录)。
+   * 关 → 卡片显示「暂未开放」。失败 / 取不到 → **null(= 未知)**,UI 不擅自判关
+   * (照 getPrivacy 的 null 语义:未知就别翻面,退回既有加载路径)。
+   */
+  getMarketOpen(): Promise<boolean | null>;
 
   // ── 杯子当前生效包(P4.2)—— 走**账号会话 + 归属**(同 /llm),不走设备 x-api-key
   //    「订了」≠「穿着」:订阅是账号级,生效是杯级(一只杯穿一件)。

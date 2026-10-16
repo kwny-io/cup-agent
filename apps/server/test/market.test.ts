@@ -22,7 +22,8 @@ interface AuthOk {
 }
 
 async function startApp(opts: Parameters<typeof createApp>[0] = {}) {
-  const app = createApp({ log: () => {}, ...opts });
+  // 市场默认**关**(未设=关);本文件钉的是市场行为,故默认开。关态另起测试(不传 marketOpen)。
+  const app = createApp({ log: () => {}, marketOpen: true, ...opts });
   const port = await app.listen(0);
   return { app, base: `http://127.0.0.1:${port}` };
 }
@@ -178,6 +179,71 @@ test('市场:投稿非法形状(空名)→ 400', async () => {
     assert.equal((await post(base, '/market/packs', { name: '' }, u.token)).status, 400);
   } finally {
     await app.close();
+  }
+});
+
+// ── 市场灰度开关(D3;未设=关)─────────────────────────────────────
+
+test('市场开关:未设(默认关)→ 公开货架空,投稿 503', async () => {
+  // 不传 marketOpen → 关(未设=关)
+  const app = createApp({ log: () => {} });
+  const port = await app.listen(0);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const u = await reg(base, { email: 'a@x.com', password: 'pw123456' });
+
+    const r = await get(base, '/market/packs', u.token);
+    assert.equal(r.status, 200);
+    assert.deepEqual(((await r.json()) as { packs: PersonaPack[] }).packs, [], '关时货架为空');
+
+    assert.equal((await post(base, '/market/packs', DRAFT, u.token)).status, 503, '关时不能投稿');
+  } finally {
+    await app.close();
+  }
+});
+
+test('市场开关:关时管理员 ?status= 审读口不受影响', async () => {
+  const app = createApp({ log: () => {}, adminEmail: 'boss@x.com' }); // 关(未设)
+  const port = await app.listen(0);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const admin = await reg(base, { email: 'boss@x.com', password: 'pw123456' });
+    // 直接往 store 造一个 pending(关闭态投不了稿,故绕开路由)
+    const r = normalizePack(DRAFT);
+    assert.equal(r.ok, true);
+    if (!r.ok) return;
+    await app.accounts.createPack(makePack(r.draft, admin.user.user_id, Date.now()));
+
+    const q = await get(base, '/market/packs?status=pending', admin.token);
+    assert.equal(q.status, 200, '管理员审读口不受开关影响');
+    assert.equal(((await q.json()) as { packs: PersonaPack[] }).packs.length, 1);
+
+    // 非管理员带 ?status= 仍 403(权限优先于开关)
+    const pleb = await reg(base, { email: 'joe@x.com', password: 'pw123456' });
+    assert.equal((await get(base, '/market/packs?status=pending', pleb.token)).status, 403);
+  } finally {
+    await app.close();
+  }
+});
+
+test('market/status:免登录回开关;开时 true,关时 false', async () => {
+  const on = await startApp({ marketOpen: true });
+  try {
+    const r = await get(on.base, '/market/status'); // 无令牌
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { open: true });
+  } finally {
+    await on.app.close();
+  }
+
+  const off = createApp({ log: () => {} });
+  const port = await off.listen(0);
+  try {
+    const r = await get(`http://127.0.0.1:${port}`, '/market/status');
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { open: false });
+  } finally {
+    await off.close();
   }
 });
 

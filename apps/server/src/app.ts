@@ -143,6 +143,11 @@ export interface AppOptions {
    * **默认 false** → 绑定行为与从前一致(零回归);设备/模拟器两半验收后由用户开。
    */
   requireClaim?: boolean;
+  /**
+   * 人格市场开放开关(D3 灰度;cli 从 env `CUP_MARKET_OPEN` 读入,**未设=关**)。
+   * 关时市场货架空、投稿 503 → 前端显示「暂未开放」。
+   */
+  marketOpen?: boolean;
   /** claim 的 pepper;不给则由 env `CUP_CLAIM_PEPPER` / dataDir 解析(见 resolveClaimPepper) */
   claimPepper?: Buffer;
   /** 日志函数;不给则用内置结构化 logger(级别/格式见下两参) */
@@ -350,6 +355,7 @@ export function createApp(opts: AppOptions = {}): App {
     reviewerEmails: opts.reviewerEmails,
     claims,
     requireClaim: opts.requireClaim,
+    marketOpen: opts.marketOpen,
     cupLlm,
     activePack,
     invite,

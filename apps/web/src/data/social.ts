@@ -335,6 +335,14 @@ export class CloudSocial implements SocialApi {
     return Array.isArray(d?.pack_ids) ? d.pack_ids : [];
   }
 
+  /** 市场开关(D3 灰度,免登录)。取不到 → null(未知,UI 不擅自判关)。 */
+  async getMarketOpen(): Promise<boolean | null> {
+    const r = await this.req('GET', '/market/status');
+    if (!r.ok) return null;
+    const v = (r.data as { open?: unknown }).open;
+    return typeof v === 'boolean' ? v : null;
+  }
+
   // ── 杯子当前生效包(P4.2;会话 + 归属,同 /llm)─────────────────
 
   async getActivePack(): Promise<PersonaPack | null> {

@@ -152,6 +152,18 @@ test('listPacks:失败退化成空数组(不 reject);成功解出 packs', async 
   assert.deepEqual(packs.map((p) => p.pack_id), ['p1', 'p2']);
 });
 
+test('getMarketOpen:命中 /market/status 解出 open;取不到 → null(未知,不判关)', async () => {
+  const impl = router([
+    { match: (u) => u.endsWith('/market/status'), json: { open: false } },
+  ]);
+  const s = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: impl, storage: memStorage() });
+  assert.equal(await s.getMarketOpen(), false);
+
+  const off = (() => Promise.reject(new TypeError('x'))) as unknown as typeof fetch;
+  const s2 = new CloudSocial({ apiBase: BASE, cupId: 'cup-X', fetchImpl: off, storage: memStorage() });
+  assert.equal(await s2.getMarketOpen(), null, '连不上 → 未知,不擅自判关');
+});
+
 test('getProfile / saveProfile:命中 /cups/:id/profile,PUT 带 nickname 体', async () => {
   const cap: Cap[] = [];
   const impl = router(
