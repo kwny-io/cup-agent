@@ -22,6 +22,7 @@ import { PgAccountsStore } from '../src/store/pg/accounts.ts';
 import { PgProfileStore } from '../src/store/pg/profile.ts';
 import { PgCupLlmStore } from '../src/store/pg/cup-llm.ts';
 import { PgActivePackStore } from '../src/store/pg/active-pack.ts';
+import { PgInviteStore } from '../src/store/pg/invite.ts';
 import { createPgPool, type Pool } from '../src/store/pg/pool.ts';
 import { migrate, applyRetention, listPartitions } from '../src/store/pg/migrate.ts';
 
@@ -324,6 +325,7 @@ if (!PG_URL) {
     'cup_settings', 'cup_latest', 'daily_agg', 'telemetry', 'events',
     'chat_turns', 'chat_profile', 'cup_traits', 'memory_cards', 'cup_claims', 'cup_llm',
     'cup_active_pack',
+    'invite_codes', 'invite_joins',
     'server_logs',
   ].join(', ');
   const fresh = async (): Promise<Store> => {
@@ -336,7 +338,7 @@ if (!PG_URL) {
       `SELECT tablename FROM pg_tables WHERE schemaname = $1`,
       [schema],
     );
-    assert.ok(t.rows.length >= 17, `期望表数 ≥17,实际 ${t.rows.length}`);
+    assert.ok(t.rows.length >= 19, `期望表数 ≥19,实际 ${t.rows.length}`);
   });
 
   // friends 反向索引（0006）：PK (a,b) 只覆盖 a 侧，`friends`/`deleteAccount` 查
@@ -483,6 +485,37 @@ if (!PG_URL) {
     assert.equal(await ap.get(CUP), null);
     await ap.clear(CUP); // 二次清 no-op
     assert.equal(await ap.get('cup-OTHER'), 'p9', 'clear 只动指定杯');
+  });
+
+  // 分享卡邀请码 / 归属边(D4;表 0008_invite_codes.sql)—— code 表与 join 表分开。
+  // 关键语义:一人多码(mint 只增)、被邀请人首触归因(recordJoin 幂等不覆盖)。
+  test('[Pg] PgInviteStore：mint/owner/recordJoin/invitedBy(一人多码·首触归因)', async () => {
+    await pool.query(`TRUNCATE ${TABLES} RESTART IDENTITY CASCADE`);
+    const inv = new PgInviteStore(pool);
+
+    // 一人多码:同一邀请人生成两枚,都归他。
+    const c1 = await inv.mint('user-A');
+    const c2 = await inv.mint('user-A');
+    assert.notEqual(c1, c2, '两次 mint 应是不同码');
+    assert.equal(c1.length, 10, '码长应为 10');
+    assert.equal(await inv.owner(c1), 'user-A');
+    assert.equal(await inv.owner(c2), 'user-A');
+    assert.equal(await inv.owner('NOPEPEPEPE'), null, '查无 → null');
+
+    // 归属边:首触归因,二次 recordJoin 不覆盖。
+    await inv.recordJoin('user-B', 'user-A', c1);
+    const j = await inv.joinOf('user-B');
+    assert.equal(j?.inviter_user_id, 'user-A');
+    assert.equal(j?.code, c1);
+    await inv.recordJoin('user-B', 'user-X', c2); // 已被 c1 归因 → 不覆盖
+    const j2 = await inv.joinOf('user-B');
+    assert.equal(j2?.inviter_user_id, 'user-A', '首触归因,不覆盖');
+    assert.equal(j2?.code, c1);
+
+    // 转化率分子:user-A 拉到 [user-B];user-X 拉到 []。
+    assert.deepEqual(await inv.invitedBy('user-A'), ['user-B']);
+    assert.deepEqual(await inv.invitedBy('user-X'), []);
+    assert.equal(await inv.joinOf('user-Z'), null, '无归属 → null');
   });
 
   // 三档删除（第 4 阶段）—— Pg 实现与 memory 同语义：conversation 本店 no-op、

@@ -38,6 +38,12 @@ import {
   activePackFilePath,
   type CupActivePackStore,
 } from './core/active-pack.ts';
+import {
+  FileInviteStore,
+  MemoryInviteStore,
+  inviteFilePath,
+  type InviteStore,
+} from './core/invite.ts';
 import { ProactiveScheduler } from './core/proactive.ts';
 import { consoleSink, createLogger, type LogLevel } from './core/logger.ts';
 import { composeSinks, createLogPipeline, type LogSinkHandle } from './core/log-pipeline.ts';
@@ -53,6 +59,7 @@ import { PgAccountsStore } from './store/pg/accounts.ts';
 import { PgProfileStore } from './store/pg/profile.ts';
 import { PgCupLlmStore } from './store/pg/cup-llm.ts';
 import { PgActivePackStore } from './store/pg/active-pack.ts';
+import { PgInviteStore } from './store/pg/invite.ts';
 import { randomBytes } from 'node:crypto';
 import type { Server } from 'node:http';
 
@@ -118,6 +125,8 @@ export interface AppOptions {
   cupLlm?: CupLlmStore;
   /** 每杯当前生效的人格包;不给则随 pgUrl / dataDir 选实现,否则内存 */
   activePack?: CupActivePackStore;
+  /** 分享卡邀请码 / 归属边(D4);不给则随 pgUrl / dataDir 选实现,否则内存 */
+  invite?: InviteStore;
   /** 每杯 key 的**加密**密钥;不给则由 env `CUP_LLM_ENC_KEY` / dataDir 解析(见 resolveLlmEncKey) */
   llmEncKey?: Buffer;
   /**
@@ -176,6 +185,8 @@ export interface App {
   cupLlm: CupLlmService;
   /** 每杯当前生效的人格包存储(P4.2;见 core/active-pack.ts) */
   activePack: CupActivePackStore;
+  /** 分享卡邀请码 / 归属边存储(D4;见 core/invite.ts) */
+  invite: InviteStore;
   /** 服务日志存储(结构化日志落库/内存) */
   serverLogs: ServerLogStore;
   /** 文件持久化句柄(未启用 dataDir 时为 null) */
@@ -275,6 +286,14 @@ export function createApp(opts: AppOptions = {}): App {
       : opts.dataDir
         ? new FileActivePackStore(activePackFilePath(opts.dataDir))
         : new MemoryActivePackStore());
+  // 分享卡邀请码 / 归属边(D4;照 activePack 三元式)。
+  const invite =
+    opts.invite ??
+    (pool
+      ? new PgInviteStore(pool)
+      : opts.dataDir
+        ? new FileInviteStore(inviteFilePath(opts.dataDir))
+        : new MemoryInviteStore());
   const cups = opts.cups ?? [];
 
   // 主动开口(P5):只有显式开启才起 —— 默认关,免得测试/离线环境里乱说话。
@@ -356,6 +375,7 @@ export function createApp(opts: AppOptions = {}): App {
     profiles,
     cupLlm,
     activePack,
+    invite,
     serverLogs,
     persist,
     proactive,
@@ -383,6 +403,7 @@ export function createApp(opts: AppOptions = {}): App {
       await profiles.flush(); // 人格档案落盘(内存/Pg 实现 no-op)
       await cupLlm.flush(); // 每杯模型配置落盘(内存/Pg 实现 no-op)
       await activePack.flush(); // 每杯生效包落盘(内存/Pg 实现 no-op)
+      await invite.flush(); // 邀请码 / 归属边落盘(内存/Pg 实现 no-op)
       await persist?.flush(); // 目标 + 画像落盘(仅文件实现)
       await persistent?.close(); // 排干日志缓冲(落库 + 落文件)—— 须在 pool.end() 之前
       await pool?.end(); // 关 pg 连接池(仅 Pg 模式)
