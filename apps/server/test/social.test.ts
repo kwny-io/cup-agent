@@ -260,6 +260,83 @@ test('social/cup:解绑后好友看不到 traits;cup_id 非法 → 400', async (
   }
 });
 
+test('P4.4 删好友:DELETE 后双向消失;不存在幂等 200;未登录 401', async () => {
+  const { app, base } = await startApp();
+  try {
+    const alice = await reg(base, { email: 'alice@x.com', password: 'pw123456' });
+    const bob = await reg(base, { email: 'bob@x.com', password: 'pw123456', nickname: 'Bob' });
+    await req(base, '/social/friends', 'POST', { email: 'bob@x.com' }, alice.token);
+
+    assert.equal(
+      (await req(base, `/social/friends/${bob.user.user_id}`, 'DELETE')).status,
+      401,
+      '未登录 → 401',
+    );
+
+    // Bob 侧反向删 Alice → 无向边应被清掉(两个方向都看不到)
+    assert.equal(
+      (await req(base, `/social/friends/${alice.user.user_id}`, 'DELETE', undefined, bob.token)).status,
+      200,
+    );
+    const aliceList = (await (await req(base, '/social/friends', 'GET', undefined, alice.token)).json()) as {
+      friends: FriendView[];
+    };
+    const bobList = (await (await req(base, '/social/friends', 'GET', undefined, bob.token)).json()) as {
+      friends: FriendView[];
+    };
+    assert.equal(aliceList.friends.length, 0, 'Alice 侧应看不到 Bob');
+    assert.equal(bobList.friends.length, 0, 'Bob 侧应看不到 Alice');
+
+    // 再删一次(已不存在)→ 幂等 200
+    assert.equal(
+      (await req(base, `/social/friends/${bob.user.user_id}`, 'DELETE', undefined, alice.token)).status,
+      200,
+      '删不存在的边 → 幂等 200',
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('P4.4 隐私开关:关掉 visible → 好友侧 traits/streak 变 null;默认开', async () => {
+  const { app, base } = await startApp();
+  try {
+    const alice = await reg(base, { email: 'alice@x.com', password: 'pw123456' });
+    const bob = await reg(base, { email: 'bob@x.com', password: 'pw123456', nickname: 'Bob' });
+    await req(base, '/social/cup', 'POST', { cup_id: CUP_B }, bob.token);
+    seedDrink(app, CUP_B, shiftDay(dayKey(Date.now()), -1), GOAL);
+    seedDrink(app, CUP_B, dayKey(Date.now()), GOAL);
+    await req(base, '/social/friends', 'POST', { email: 'bob@x.com' }, alice.token);
+
+    // 默认可见(缺省)
+    const def = (await (await req(base, '/social/privacy', 'GET', undefined, bob.token)).json()) as {
+      visible: boolean;
+    };
+    assert.equal(def.visible, true, '默认可见');
+    const before = (await (await req(base, '/social/friends', 'GET', undefined, alice.token)).json()) as {
+      friends: FriendView[];
+    };
+    assert.notEqual(before.friends[0]!.traits, null, '默认看得到性格');
+
+    // 关掉 → 好友只看得到昵称
+    assert.equal(
+      (await req(base, '/social/privacy', 'PUT', { visible: false }, bob.token)).status,
+      200,
+    );
+    const after = (await (await req(base, '/social/friends', 'GET', undefined, alice.token)).json()) as {
+      friends: FriendView[];
+    };
+    assert.equal(after.friends[0]!.traits, null, '关掉后看不到性格');
+    assert.equal(after.friends[0]!.streak, null, '关掉后看不到 streak');
+    assert.equal(after.friends[0]!.nickname, 'Bob', '昵称仍在');
+
+    // 非法值 → 400
+    assert.equal((await req(base, '/social/privacy', 'PUT', { visible: 'no' }, bob.token)).status, 400);
+  } finally {
+    await app.close();
+  }
+});
+
 test('GET /social/cup:未绑 → null;绑后 → 该杯;解绑 → 回到 null;未登录 → 401', async () => {
   const { app, base } = await startApp();
   try {
@@ -356,11 +433,19 @@ test('持久化:绑杯子 + 加好友落盘,新实例读回', async () => {
     await s1.createAccount(acc('u_b', 'b@x.com'));
     await s1.setCup('u_b', CUP_B);
     await s1.addFriend('u_a', 'u_b');
+    await s1.setVisible('u_b', false);
     await s1.flush();
 
     const s2 = new FileAccountsStore(dir);
     assert.equal((await s2.accountById('u_b'))?.cup_id, CUP_B, '杯子绑定应恢复');
     assert.deepEqual(await s2.friends('u_a'), ['u_b'], '好友关系应恢复');
+    assert.equal((await s2.accountById('u_b'))?.visible, false, '可见性开关应恢复');
+
+    // 删好友也落盘(无向边反向调同样命中)
+    await s2.removeFriend('u_b', 'u_a');
+    await s2.flush();
+    const s3 = new FileAccountsStore(dir);
+    assert.deepEqual(await s3.friends('u_a'), [], '删好友后应落盘');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

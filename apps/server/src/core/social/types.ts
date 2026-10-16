@@ -37,6 +37,13 @@ export interface Account {
    * 完整的 R10-B 读侧用户归属仍是后续阶段,此处不碰设备读端点。
    */
   cup_id?: string;
+  /**
+   * 好友可见性开关(P4.4 隐私)。
+   *   · `undefined` / `true` = **可见**(缺省):好友能看到该杯派生的性格 + streak(前提是绑了杯);
+   *   · `false` = **不可见**:好友只看得到昵称 —— 出口层抹掉 traits/streak。
+   * 缺省视为可见(设计稿 Q8:默认开)。这是账号级开关,与 cup_id 正交(不绑杯本就无 traits 可露)。
+   */
+  visible?: boolean;
 }
 
 export interface Session {
@@ -122,6 +129,8 @@ export interface AccountsStore {
   setDisabled(id: string, v: boolean): Promise<void>;
   /** 绑定 / 解绑用户的杯子(#74 好友互见的口子);cupId 为 null = 解绑 */
   setCup(id: string, cupId: string | null): Promise<void>;
+  /** 好友可见性开关(P4.4 隐私);缺省视为可见(见 `Account.visible` 注) */
+  setVisible(id: string, v: boolean): Promise<void>;
   /**
    * 删账号及其名下社交数据(删除第 4 阶段:账号级「注销」)。**硬删**,无墓碑。
    * 连带清掉该用户的订阅与好友边(它们引用 userId,留着就是悬垂数据)。
@@ -148,6 +157,8 @@ export interface AccountsStore {
 
   // ── 好友 ──
   addFriend(a: string, b: string): Promise<void>;
+  /** 删好友(P4.4;G5「只能加不能删」的出口)—— 无向边,任一方向调用都清掉那条边;不存在 = no-op */
+  removeFriend(a: string, b: string): Promise<void>;
   friends(userId: string): Promise<string[]>;
 
   // ── 可信绑定(claim code;见 claim.ts)──

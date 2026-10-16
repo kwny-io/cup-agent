@@ -238,6 +238,13 @@ async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): 
   if (path === '/social/friends') {
     return await socialFriendsRoute(req, res, deps);
   }
+  const delFriend = path.match(/^\/social\/friends\/([^/]+)$/);
+  if (delFriend) {
+    return await socialFriendDeleteRoute(req, res, deps, decodeURIComponent(delFriend[1]!));
+  }
+  if (path === '/social/privacy') {
+    return await socialPrivacyRoute(req, res, deps);
+  }
   if (path === '/social/cup') {
     return await socialCupBindRoute(req, res, deps);
   }
@@ -727,16 +734,21 @@ async function friendView(
   userId: string,
   nickname: string,
   cupId?: string,
+  visible?: boolean,
 ): Promise<FriendView> {
-  if (!cupId) return { user_id: userId, nickname, traits: null, streak: null };
+  // P4.4 隐私开关:对方关掉可见 → 只给昵称(traits/streak 一律 null)。
+  // 缺省(undefined) = 可见(设计稿 Q8)。「解绑杯子」也走同一出口(无 cupId = 本就无 traits)。
+  if (!cupId || visible === false) return { user_id: userId, nickname, traits: null, streak: null };
   const { traits, streak } = await traitsForCup(deps, cupId);
   return { user_id: userId, nickname, traits, streak };
 }
 
 /**
- * GET  /social/friends → 200 { friends: FriendView[] }(需登录)
- * POST /social/friends { email } → 200 { friend: FriendView }(按邮箱加好友;需登录)
+ * GET    /social/friends     → 200 { friends: FriendView[] }(需登录)
+ * POST   /social/friends { email } → 200 { friend: FriendView }(按邮箱加好友;需登录)
  *   · 加不存在的邮箱 → 404;加自己 → 400;重复加 → 幂等 200。
+ * DELETE /social/friends/:id → 200 { ok: true }(删好友;P4.4,G5「只能加不能删」的出口)
+ *   · 无向边,任一方向调都清掉那条边;不存在 → 幂等 200(不报错)。
  */
 async function socialFriendsRoute(
   req: IncomingMessage,
@@ -752,7 +764,7 @@ async function socialFriendsRoute(
     const friends: FriendView[] = [];
     for (const id of ids) {
       const a = await deps.accounts!.accountById(id);
-      friends.push(await friendView(deps, id, a?.nickname ?? id, a?.cup_id));
+      friends.push(await friendView(deps, id, a?.nickname ?? id, a?.cup_id, a?.visible));
     }
     return send(res, 200, { friends });
   }
@@ -768,8 +780,48 @@ async function socialFriendsRoute(
   if (target.user_id === me.user_id) return send(res, 400, { error: '不能加自己' });
   await deps.accounts!.addFriend(me.user_id, target.user_id);
   send(res, 200, {
-    friend: await friendView(deps, target.user_id, target.nickname, target.cup_id),
+    friend: await friendView(deps, target.user_id, target.nickname, target.cup_id, target.visible),
   });
+}
+
+/** DELETE /social/friends/:id → 200 { ok: true }(删好友;P4.4) */
+async function socialFriendDeleteRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+  friendUserId: string,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
+  if (!me) return;
+  if ((req.method ?? 'GET') !== 'DELETE') return send(res, 405, { error: 'use DELETE' });
+  await deps.accounts!.removeFriend(me.user_id, friendUserId);
+  send(res, 200, { ok: true });
+}
+
+/**
+ * GET /social/privacy → 200 { visible: boolean }(我的可见性开关;缺省 = true)
+ * PUT /social/privacy { visible } → 200 { visible }(P4.4 隐私开关)
+ */
+async function socialPrivacyRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiDeps,
+): Promise<void> {
+  const me = await guardUser(req, res, deps);
+  if (!me) return;
+  const method = req.method ?? 'GET';
+
+  if (method === 'GET') {
+    const acct = await deps.accounts!.accountById(me.user_id);
+    return send(res, 200, { visible: acct?.visible !== false });
+  }
+  if (method !== 'PUT') return send(res, 405, { error: 'use GET or PUT' });
+
+  const body = await readJson(req);
+  const raw = (body as { visible?: unknown }).visible;
+  if (typeof raw !== 'boolean') return send(res, 400, { error: 'visible 必须是布尔' });
+  await deps.accounts!.setVisible(me.user_id, raw);
+  send(res, 200, { visible: raw });
 }
 
 /**

@@ -86,6 +86,11 @@ export class MemoryAccountsStore implements AccountsStore {
     }
   }
 
+  async setVisible(id: string, v: boolean): Promise<void> {
+    const a = this.accounts.get(id);
+    if (a) this.accounts.set(id, { ...a, visible: v });
+  }
+
   async deleteAccount(id: string): Promise<void> {
     const a = this.accounts.get(id);
     if (a) this.byEmail.delete(normalizeEmail(a.email));
@@ -146,6 +151,11 @@ export class MemoryAccountsStore implements AccountsStore {
     if (a === b) return;
     const [x, y] = friendPair(a, b);
     this.friendEdges.set(friendKey(a, b), { a_user_id: x, b_user_id: y, created_at: Date.now() });
+  }
+
+  async removeFriend(a: string, b: string): Promise<void> {
+    if (a === b) return;
+    this.friendEdges.delete(friendKey(a, b));
   }
 
   async friends(userId: string): Promise<string[]> {
@@ -241,6 +251,14 @@ export class FileAccountsStore implements AccountsStore {
     this.file.flushSoon();
   }
 
+  async setVisible(id: string, v: boolean): Promise<void> {
+    const a = this.s.accounts[id];
+    if (a) {
+      this.s.accounts[id] = { ...a, visible: v };
+      this.file.flushSoon();
+    }
+  }
+
   async deleteAccount(id: string): Promise<void> {
     delete this.s.accounts[id];
     delete this.s.subscriptions[id];
@@ -316,6 +334,16 @@ export class FileAccountsStore implements AccountsStore {
     const [x, y] = friendPair(a, b);
     this.s.friends.push({ a_user_id: x, b_user_id: y, created_at: Date.now() });
     this.file.flushSoon();
+  }
+
+  async removeFriend(a: string, b: string): Promise<void> {
+    if (a === b) return;
+    const key = friendKey(a, b);
+    const next = this.s.friends.filter((f) => friendKey(f.a_user_id, f.b_user_id) !== key);
+    if (next.length !== this.s.friends.length) {
+      this.s.friends = next;
+      this.file.flushSoon();
+    }
   }
 
   async friends(userId: string): Promise<string[]> {

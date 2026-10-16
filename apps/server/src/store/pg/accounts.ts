@@ -21,6 +21,7 @@ interface UserRow {
   created_at: number;
   disabled: boolean;
   cup_id: string | null;
+  visible: boolean;
 }
 
 function toAccount(r: UserRow): Account {
@@ -35,6 +36,8 @@ function toAccount(r: UserRow): Account {
   };
   if (r.disabled) a.disabled = true;
   if (r.cup_id !== null) a.cup_id = r.cup_id;
+  // 缺省 = 可见 → 与 memory/file 对齐:`visible` 字段只在 false 时出口(不在 true 时写 true)。
+  if (r.visible === false) a.visible = false;
   return a;
 }
 
@@ -98,12 +101,13 @@ export class PgAccountsStore implements AccountsStore {
   async createAccount(a: Account): Promise<void> {
     await query(
       this.pool,
-      `INSERT INTO users (user_id, email, nickname, salt, hash, role, created_at, disabled, cup_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO users (user_id, email, nickname, salt, hash, role, created_at, disabled, cup_id, visible)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (user_id) DO UPDATE SET
          email = EXCLUDED.email, nickname = EXCLUDED.nickname,
          salt = EXCLUDED.salt, hash = EXCLUDED.hash, role = EXCLUDED.role,
-         disabled = EXCLUDED.disabled, cup_id = EXCLUDED.cup_id`,
+         disabled = EXCLUDED.disabled, cup_id = EXCLUDED.cup_id,
+         visible = EXCLUDED.visible`,
       [
         a.user_id,
         a.email,
@@ -114,6 +118,7 @@ export class PgAccountsStore implements AccountsStore {
         a.created_at,
         a.disabled === true,
         a.cup_id ?? null,
+        a.visible !== false,
       ],
     );
   }
@@ -145,12 +150,23 @@ export class PgAccountsStore implements AccountsStore {
     await query(this.pool, `UPDATE users SET cup_id = $2 WHERE user_id = $1`, [id, cupId]);
   }
 
+  async setVisible(id: string, v: boolean): Promise<void> {
+    await query(this.pool, `UPDATE users SET visible = $2 WHERE user_id = $1`, [id, v]);
+  }
+
   async deleteAccount(id: string): Promise<void> {
-    // 订阅/好友表没有 users 外键(见 0001:只有 sessions 有 ON DELETE CASCADE)→ 显式清。
+    // 订阅/好友/邀请表没有 users 外键(见 0001:只有 sessions 有 ON DELETE CASCADE)→ 显式清。
     // 全部收在一个事务里:账号删了但好友边留着 = 悬垂数据(好友列表会指向不存在的 user)。
+    // 邀请两侧都清(见 invite.ts 头注):注销者既可能是邀请人(invite_codes/invite_joins.inviter),
+    // 也可能是被邀请人(invite_joins 以 invitee_user_id 为 PK)—— 归属边是敏感关系,不留悬垂。
     await withTransaction(this.pool, async (client) => {
       await client.query(`DELETE FROM subscriptions WHERE user_id = $1`, [id]);
       await client.query(`DELETE FROM friends WHERE a_user_id = $1 OR b_user_id = $1`, [id]);
+      await client.query(`DELETE FROM invite_codes WHERE inviter_user_id = $1`, [id]);
+      await client.query(
+        `DELETE FROM invite_joins WHERE invitee_user_id = $1 OR inviter_user_id = $1`,
+        [id],
+      );
       await client.query(`DELETE FROM users WHERE user_id = $1`, [id]);
     });
   }
@@ -261,6 +277,12 @@ export class PgAccountsStore implements AccountsStore {
        ON CONFLICT (a_user_id, b_user_id) DO NOTHING`,
       [x, y, Date.now()],
     );
+  }
+
+  async removeFriend(a: string, b: string): Promise<void> {
+    if (a === b) return;
+    const [x, y] = a <= b ? [a, b] : [b, a];
+    await query(this.pool, `DELETE FROM friends WHERE a_user_id = $1 AND b_user_id = $2`, [x, y]);
   }
 
   async friends(userId: string): Promise<string[]> {

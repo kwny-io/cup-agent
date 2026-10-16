@@ -393,6 +393,17 @@ if (!PG_URL) {
     await a.addFriend('u2', 'u1'); // 幂等
     assert.deepEqual(await a.friends('u1'), ['u2']);
     assert.deepEqual(await a.friends('u2'), ['u1']);
+    // 删好友(P4.4)：无向边任一方向调都清同一份；不存在 = no-op
+    await a.removeFriend('u2', 'u1'); // 反向调也应命中规范存的那条
+    assert.deepEqual(await a.friends('u1'), []);
+    assert.deepEqual(await a.friends('u2'), []);
+    await a.removeFriend('u1', 'u2'); // 已不存在 → no-op 不抛
+    // 可见性开关(P4.4)：缺省 = 可见(字段缺席)，置 false 才出口
+    assert.equal((await a.accountById('u1'))?.visible, undefined);
+    await a.setVisible('u1', false);
+    assert.equal((await a.accountById('u1'))?.visible, false);
+    await a.setVisible('u1', true);
+    assert.equal((await a.accountById('u1'))?.visible, undefined, '置回 true = 字段重返缺席口径');
     // 订阅幂等
     await a.subscribe('u1', 'p1');
     await a.subscribe('u1', 'p1');
