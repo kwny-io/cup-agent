@@ -234,13 +234,17 @@ export class Engine {
   }
 
   /**
-   * 实时模式:按真实时间推进,直到脚本跑完。
-   * 供 --ws 演示 / 前端联调用 —— 数据是"流"出来的,不是瞬间冲出来的。
-   * @returns 结束后 resolve
+   * 实时模式:按真实时间推进。供 --ws 演示 / 前端联调用 —— 数据是"流"出来的,不是瞬间冲出来的。
+   *
+   * **不随脚本结束而退出**(修 2026-10-17 的"闪退"):脚本这一天跑完后,实时循环继续存活,
+   * 遥测仍按 reportMs 持续上报(供操控页/前端持续观察与控制),直到 stopRealtime() 或 Ctrl-C。
+   * 想跑多天用 `--days N`(脚本本身已排 N 天),不要靠这里循环。
+   * @returns 仅在 stopRealtime() 后 resolve
    */
   runRealtime(onTickMs = 50): Promise<void> {
     const lastAt = this.steps.length > 0 ? this.steps[this.steps.length - 1]!.atMs : 0;
     const endVirtualMs = lastAt + 60_000;
+    let scriptDone = false;
     this.running = true;
     return new Promise((resolve) => {
       const done = (): void => {
@@ -251,7 +255,10 @@ export class Engine {
       const timer = setInterval(() => {
         if (this.paused) return; // 手动暂停:不推进虚拟时间(连接与出口仍在)
         this.step(onTickMs);
-        if (this.clock.virtualElapsedMs >= endVirtualMs) done();
+        if (!scriptDone && this.clock.virtualElapsedMs >= endVirtualMs) {
+          scriptDone = true;
+          this.log('[脚本] 一天跑完,实时出口保持存活(Ctrl-C 结束)');
+        }
       }, onTickMs);
       this.stopRealtime = done;
     });

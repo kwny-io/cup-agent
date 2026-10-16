@@ -274,9 +274,20 @@ function main(): void {
   };
 
   if (ws || mqtt) {
-    // 实时模式:数据流式发出,供前端订阅 / 后端消费;Ctrl-C 结束
-    console.log('实时模式(Ctrl-C 结束)…');
-    void engine.runRealtime().then(() => finish(0));
+    // 实时模式:数据流式发出,供前端订阅 / 后端消费。脚本跑完后出口**保持存活**(不再闪退),
+    // Ctrl-C 结束 → 打印汇总并关出口。用 once 防连按两次触发重复收尾。
+    console.log('实时模式(Ctrl-C 结束;跑完脚本后仍保持连接)…');
+    let closing = false;
+    const shutdown = (): void => {
+      if (closing) return;
+      closing = true;
+      engine.stopRealtime?.();
+      finish(0);
+      process.exit(0);
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+    void engine.runRealtime().then(() => { if (!closing) shutdown(); });
   } else {
     const { ticks } = engine.runToEnd(args.scenario === 'smoke' ? 20_000 : 3_600_000);
     finish(ticks);
