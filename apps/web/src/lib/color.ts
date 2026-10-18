@@ -47,6 +47,41 @@ export const TEMP_STOPS: Stop[] = [
   { t: 82, fill: '#f08a55', deep: '#cf5a22', foam: '#fbd7bf' }, // 烫
 ];
 
+/**
+ * 水温分区 —— 与 TEMP_STOPS **同源**的一段连续区间,让「颜色」与「分区」不会各说各话。
+ *
+ *   cold <14 | cool 14–38 | comfort 38–52 | hot 52–65 | scalding ≥65
+ *
+ * `hot` 起于 52℃(金黄→暖橙那一段),也正是**喝不下去**的起点:蒸汽(55)、
+ * 脑门汗(60)、硬件盖脸的 HOT_TEMP_C(55)全都落在这个区里。
+ */
+export type TempZone = 'cold' | 'cool' | 'comfort' | 'hot' | 'scalding';
+
+export const TEMP_ZONE_EDGES = { cool: 14, comfort: 38, hot: 52, scalding: 65 } as const;
+
+export function tempZone(t: number): TempZone {
+  const e = TEMP_ZONE_EDGES;
+  if (t < e.cool) return 'cold';
+  if (t < e.comfort) return 'cool';
+  if (t < e.hot) return 'comfort';
+  if (t < e.scalding) return 'hot';
+  return 'scalding';
+}
+
+/** 高温区里的「受不了」强度 0..1:52℃ 起步,65℃ 拉满,更烫恒为 1。 */
+export function heatAmount(t: number): number {
+  return clamp01((t - TEMP_ZONE_EDGES.hot) / (TEMP_ZONE_EDGES.scalding - TEMP_ZONE_EDGES.hot));
+}
+
+/** 分区中文名(调试/测试可读) */
+export const TEMP_ZONE_LABEL: Record<TempZone, string> = {
+  cold: '冷',
+  cool: '凉',
+  comfort: '舒适',
+  hot: '热',
+  scalding: '烫',
+};
+
 export function tempColor(t: number): TempColor {
   const stops = TEMP_STOPS;
   const lo = stops[0]!;

@@ -69,11 +69,41 @@ test('TodayPanel:目标进度百分比 + 三个统计格 + 水温取整', () => 
   unmount();
 });
 
-test('TodayPanel:水温为 null → 显示占位破折号', () => {
+test('TodayPanel:水温为 null → 显示占位破折号,分区条不画游标', () => {
   const { host, unmount } = mount(
     createElement(TodayPanel, { stats, snap: { ...snap, tempC: null } }),
   );
   assert.match(host.textContent ?? '', /—/);
+  // 五个分区名常在,null 时只是没有"当前落在哪"的高亮游标
+  for (const z of ['冷', '凉', '舒适', '热', '烫']) {
+    assert.ok(host.textContent?.includes(z), `分区条缺「${z}」`);
+  }
+  const bar = host.querySelector('.relative.flex.h-2\\.5');
+  assert.ok(bar, '没画分区条');
+  assert.equal(bar!.querySelectorAll('span').length, 0, 'null 温度不该有游标');
+  unmount();
+});
+
+test('TodayPanel:分区条按 TEMP_ZONE_EDGES 切分,游标落在所属区段上', () => {
+  const { host, unmount } = mount(createElement(TodayPanel, { stats, snap }));
+  const segs = [...host.querySelectorAll<HTMLElement>('.relative.flex.h-2\\.5 > div')];
+  assert.equal(segs.length, 5, '应有 5 段(冷/凉/舒适/热/烫)');
+  // 80℃ 满量程:14/38/52/65 → 17.5% / 47.5% / 65% / 81.25%
+  const widths = segs.map((s) => Number.parseFloat(s.style.width));
+  const want = [17.5, 30, 17.5, 16.25, 18.75];
+  widths.forEach((w, i) => {
+    assert.ok(Math.abs(w - want[i]!) < 0.1, `第 ${i} 段宽度 ${w}% ≠ ${want[i]}%`);
+  });
+  // 48.4℃ 落在 comfort(38–52) → 游标 48.4/80 = 60.5%
+  const dot = host.querySelector<HTMLElement>('.relative.flex.h-2\\.5 > span');
+  assert.ok(dot, '有温度时应有游标');
+  assert.ok(
+    Math.abs(Number.parseFloat(dot!.style.left) - 60.5) < 0.1,
+    `游标位置 ${dot!.style.left} ≠ 60.5%`,
+  );
+  // 当前分区名加粗(舒适),其余不加
+  const active = [...host.querySelectorAll('span.font-semibold')].map((s) => s.textContent);
+  assert.ok(active.includes('舒适'), `当前分区没高亮:${active.join(',')}`);
   unmount();
 });
 

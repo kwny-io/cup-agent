@@ -7,7 +7,15 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { hex, mix, tempColor, TEMP_STOPS } from '../src/lib/color.ts';
+import {
+  hex,
+  mix,
+  tempColor,
+  tempZone,
+  heatAmount,
+  TEMP_STOPS,
+  TEMP_ZONE_EDGES,
+} from '../src/lib/color.ts';
 
 const isColor = (s: string) => /^#[0-9a-f]{6}$|^rgb\(\d+,\d+,\d+\)$/i.test(s);
 
@@ -42,4 +50,56 @@ test('冷热两端一眼可辨(暖冷分明的色差)', () => {
   // 暖色应比冷色红得多、蓝得少:红分量差足够大即"一眼可辨"
   assert.ok(hot[0]! - cold[0]! > 40, `冷热 fill 红分量差不够:${cold} vs ${hot}`);
   assert.ok(cold[2]! - hot[2]! > 20, `冷热 fill 蓝分量差不够:${cold} vs ${hot}`);
+});
+
+// ── 温度分区(「做区域切分」)────────────────────────────────
+
+test('温度分区:边界向内归入低温那一档,不重叠不跳档', () => {
+  const e = TEMP_ZONE_EDGES;
+  assert.equal(tempZone(-10), 'cold');
+  assert.equal(tempZone(e.cool - 0.1), 'cold');
+  assert.equal(tempZone(e.cool), 'cool');
+  assert.equal(tempZone(e.comfort - 0.1), 'cool');
+  assert.equal(tempZone(e.comfort), 'comfort');
+  assert.equal(tempZone(e.hot - 0.1), 'comfort');
+  assert.equal(tempZone(e.hot), 'hot');
+  assert.equal(tempZone(e.scalding - 0.1), 'hot');
+  assert.equal(tempZone(e.scalding), 'scalding');
+  assert.equal(tempZone(120), 'scalding');
+});
+
+test('温度分区:连续扫描 -20..120 恰好走一遍五档,不来回跳', () => {
+  const seen: string[] = [];
+  let prev = '';
+  for (let t = -20; t <= 120; t += 0.5) {
+    const z = tempZone(t);
+    if (z !== prev) {
+      seen.push(z);
+      prev = z;
+    }
+  }
+  assert.deepEqual(seen, ['cold', 'cool', 'comfort', 'hot', 'scalding']);
+});
+
+test('温度分区与颜色同源:高温区起点正好是金黄→暖橙那一段(52℃)', () => {
+  assert.equal(TEMP_ZONE_EDGES.hot, 52);
+  assert.ok(TEMP_STOPS.some((s) => s.t === TEMP_ZONE_EDGES.hot), '分区边界应落在色阶 stop 上');
+  assert.equal(tempZone(51.9), 'comfort');
+  assert.equal(tempZone(52), 'hot');
+});
+
+test('炎热强度:52℃ 起步为 0,65℃ 拉满为 1,超温恒为 1;区外恒 0', () => {
+  assert.equal(heatAmount(TEMP_ZONE_EDGES.hot), 0);
+  assert.equal(heatAmount(TEMP_ZONE_EDGES.scalding), 1);
+  assert.equal(heatAmount(120), 1);
+  assert.equal(heatAmount(20), 0);
+  assert.equal(heatAmount(-5), 0);
+  // 区间内单调、且严格介于 0..1
+  let prev = -1;
+  for (let t = 52; t <= 65; t += 1) {
+    const a = heatAmount(t);
+    assert.ok(a >= prev && a >= 0 && a <= 1, `t=${t} 强度不合法:${a}`);
+    prev = a;
+  }
+  assert.ok(heatAmount(58.5) > 0.4 && heatAmount(58.5) < 0.6, '中点应约在半程');
 });

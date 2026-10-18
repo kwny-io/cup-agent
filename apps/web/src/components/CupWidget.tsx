@@ -15,8 +15,23 @@
  * 只读 lid/base 遥测,不关心数据从哪来。
  */
 import { useEffect, useRef } from 'react';
-import { SHAKE_DRIVE_AMP, SHAKE_HZ, WaterWave, FIXED_DT } from '../lib/water.ts';
-import { clamp01, lerp, mix, tempColor, type TempColor } from '../lib/color.ts';
+import {
+  SHAKE_DRIVE_AMP,
+  SHAKE_HZ,
+  WaterWave,
+  FIXED_DT,
+  cupTiltFromSlope,
+} from '../lib/water.ts';
+import {
+  clamp01,
+  lerp,
+  mix,
+  tempColor,
+  tempZone,
+  heatAmount,
+  type TempColor,
+} from '../lib/color.ts';
+import { faceMode, type ScreenFaceMode } from '../lib/face-mode.ts';
 import { dejectedness, dulled, soberBubbleCount, WATER_DULL_MAX } from '../lib/sulk.ts';
 import { CupMood, type Disposition, type Mood } from '../lib/mood.ts';
 import { packRenderParams, type PackRenderParams } from '../lib/pack-render.ts';
@@ -276,7 +291,7 @@ function draw(
 
   const cx = g.x + g.w / 2;
 
-  // 杯下投影(落地感,立体第一步)
+  // 杯下投影(落地感,立体第一步)—— 不随倾斜转:影子留在地上
   ctx.save();
   ctx.globalAlpha = 0.12;
   ctx.fillStyle = SHADOW;
@@ -284,6 +299,17 @@ function draw(
   ctx.ellipse(cx, g.y + g.h + s * 0.02, g.w * 0.5, s * 0.03, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+
+  // 跟着真实杯子一起倾斜:绕杯体中心转,液面斜率正好被抵消 →
+  // 杯身歪了,水在世界里仍是平的。用缓动后的 slopeTan 反解,杯子和水不会各抖各的。
+  ctx.save();
+  const cupTilt = cupTiltFromSlope(wave.slopeTan);
+  if (Math.abs(cupTilt) > 1e-4) {
+    const py = g.y + g.h * 0.5;
+    ctx.translate(cx, py);
+    ctx.rotate(cupTilt);
+    ctx.translate(-cx, -py);
+  }
 
   // 杯身:饱满圆柱。横向渐变(左暗→中亮→右暗)是立体感的来源
   cupBodyPath(ctx, g);
@@ -346,6 +372,8 @@ function draw(
   ctx.quadraticCurveTo(g.x + g.w * 0.19, g.y + g.h * 0.52, g.x + g.w * 0.23, g.y + g.h * 0.86);
   ctx.stroke();
   ctx.restore();
+
+  ctx.restore(); // 杯体倾斜
 }
 
 /** 水面:波高数组 + 整体倾斜构成液面曲线 */
@@ -536,14 +564,19 @@ function drawFaceLayer(
 ): void {
   const n = wave.n;
   const mid = (n - 1) / 2;
-  const dx = g.w / (n - 1);
   const waterH = g.h * level;
   const surfaceY = g.y + g.h - waterH;
 
-  const empty = level <= 0.06;
   const faceR = s * 0.13;
-  const sulking = mood === 'sulk'; // 蔫:闹别扭(撇嘴 + 眼神飘走)
-  const smug = mood === 'smug'; // 得意:傲娇地满足(半眯眼)
+  const shaking = lid?.motion === 'shake';
+  // 脸型按「身体事实 > 心情」决议(优先级见 lib/face-mode.ts)
+  const zone = tempZone(temp);
+  const mode: ScreenFaceMode = faceMode({ shaking, level01: level, zone, mood });
+  const empty = mode === 'drought';
+  const heat = mode === 'heat';
+  const heatAmt = heat ? heatAmount(temp) : 0;
+  const sulking = mode === 'sulk'; // 蔫:闹别扭(撇嘴 + 眼神飘走)
+  const smug = mode === 'smug'; // 得意:傲娇地满足(半眯眼)
   // 反愧疚(#5):蔫的**程度**(0..1)—— 喝了一口 → dejected 掉下来 → 表情缓和。
   // 不蔫时 sulkAmt 恒 0;蔫但刚被哄 → 介于"全撇嘴"和"淡淡抿着"之间(勉强振作)。
   const sulkAmt = sulking ? dejected : 0;
@@ -553,26 +586,27 @@ function drawFaceLayer(
   const midOffset = wave.surfaceOffset(midIdx);
   const surfMid = surfaceY - midOffset;
 
-  // 脸随液面斜率微转
-  const slopePxUp =
-    (wave.surfaceOffset(Math.min(n - 1, midIdx + 1)) -
-      wave.surfaceOffset(Math.max(0, midIdx - 1))) /
-    (2 * dx);
-  const rot = Math.atan(-slopePxUp) * 0.7;
+  // 杯体整体倾斜了多少 —— 脸要**抵掉**这个旋转,才能"杯歪人正"地骑在水面上
+  const cupTilt = cupTiltFromSlope(wave.slopeTan);
+  const cosT = Math.cos(cupTilt);
+  const sinT = Math.sin(cupTilt);
 
   const cx = g.x + g.w / 2;
-  let cy = empty ? g.y + g.h - faceR * 1.8 : surfMid - faceR * 1.35;
+  // 脸在**世界坐标**里要悬在水面正中上方 faceR*1.35,再反变换回杯体的本地坐标。
+  // 不做这步,杯体一歪脸就跟着歪,看着像整张图被斜切了。
+  const lift = faceR * 1.35;
+  const fx = empty ? cx : cx - lift * sinT;
+  let cy = empty ? g.y + g.h - faceR * 1.8 : surfMid - lift * cosT;
   // 夹在杯内:上界要躲开杯口椭圆前缘(脸在杯里,杯口画在后面会盖住脸)
   cy = Math.max(g.y + g.rim + faceR * 0.9, Math.min(g.y + g.h - faceR * 1.1, cy));
 
-  const shaking = lid?.motion === 'shake';
   const tiltDir = ((lid?.tilt_dir ?? 0) * Math.PI) / 180;
   // 眼珠朝低处瞟
   const lookX = clamp01((1 + Math.cos(tiltDir)) / 2) * 2 - 1;
 
   ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(rot);
+  ctx.translate(fx, cy);
+  ctx.rotate(-cupTilt); // 抵掉杯体的倾斜:杯歪,小人儿站得笔直
 
   const ink = P.deep;
   ctx.strokeStyle = ink;
@@ -591,24 +625,58 @@ function drawFaceLayer(
   // 得意 → 半眯眼(上眼睑压到中段,露出下半个亮虹膜,像在"哼")
   const lidDroop = smug ? 0.78 : 0;
 
-  if (empty || shaking) {
-    // 蔫 / 发懵:闭眼(向下弯的弧,像 ▶◀ 的柔和版;摇晃时上下抖)
-    const wob = shaking ? Math.sin(tSec * 14) * faceR * 0.05 : 0;
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = Math.max(2, faceR * 0.15);
-    for (const d of [-eyeDX, eyeDX]) {
+  if (empty || shaking || heat) {
+    if (empty) {
+      // 干旱:眼睛是两条干裂的短横线(不是舒服地闭着)——缺水太久,连睁都费劲
+      ctx.strokeStyle = ink;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(2, faceR * 0.13);
+      for (const d of [-eyeDX, eyeDX]) {
+        const tilt = d < 0 ? 1 : -1;
+        ctx.beginPath();
+        ctx.moveTo(d - eyeRX * 0.9, eyeY - faceR * 0.02 + tilt * faceR * 0.05);
+        ctx.lineTo(d + eyeRX * 0.9, eyeY - faceR * 0.02 - tilt * faceR * 0.05);
+        ctx.stroke();
+      }
+    } else if (heat) {
+      // 受不了炎热:紧闭到挤出褶子 —— 两条向内压的弧 + 上方一道燥热纹
+      const wob = Math.sin(tSec * 9) * faceR * 0.015 * heatAmt;
+      ctx.strokeStyle = ink;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(2, faceR * 0.15);
+      for (const d of [-eyeDX, eyeDX]) {
+        ctx.beginPath();
+        ctx.arc(d, eyeY - faceR * 0.04 + wob, faceR * 0.25, Math.PI * 1.16, Math.PI * 1.84);
+        ctx.stroke();
+      }
+      // 眼角的"热到皱眉":各一道短斜线,朝内上挑
+      ctx.lineWidth = Math.max(2, faceR * 0.1);
+      for (const d of [-eyeDX, eyeDX]) {
+        const inward = d < 0 ? 1 : -1;
+        ctx.beginPath();
+        ctx.moveTo(d - inward * faceR * 0.3, eyeY - faceR * 0.28);
+        ctx.lineTo(d + inward * faceR * 0.02, eyeY - faceR * 0.42);
+        ctx.stroke();
+      }
+    } else {
+      // 发懵:闭眼 + 上下抖
+      const wob = Math.sin(tSec * 14) * faceR * 0.05;
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = Math.max(2, faceR * 0.15);
+      for (const d of [-eyeDX, eyeDX]) {
+        ctx.beginPath();
+        ctx.arc(d, eyeY - faceR * 0.02 + wob, faceR * 0.24, Math.PI * 1.18, Math.PI * 1.82);
+        ctx.stroke();
+      }
+      // 晕乎乎的睫毛
+      ctx.lineWidth = Math.max(2, faceR * 0.11);
       ctx.beginPath();
-      ctx.arc(d, eyeY - faceR * 0.02 + wob, faceR * 0.24, Math.PI * 1.18, Math.PI * 1.82);
+      ctx.moveTo(-eyeDX - faceR * 0.24, eyeY - faceR * 0.14 + wob);
+      ctx.lineTo(-eyeDX - faceR * 0.36, eyeY - faceR * 0.22 + wob);
+      ctx.moveTo(eyeDX + faceR * 0.24, eyeY - faceR * 0.14 + wob);
+      ctx.lineTo(eyeDX + faceR * 0.36, eyeY - faceR * 0.22 + wob);
       ctx.stroke();
     }
-    // 蔫了也留一撮睫毛
-    ctx.lineWidth = Math.max(2, faceR * 0.11);
-    ctx.beginPath();
-    ctx.moveTo(-eyeDX - faceR * 0.24, eyeY - faceR * 0.14 + wob);
-    ctx.lineTo(-eyeDX - faceR * 0.36, eyeY - faceR * 0.22 + wob);
-    ctx.moveTo(eyeDX + faceR * 0.24, eyeY - faceR * 0.14 + wob);
-    ctx.lineTo(eyeDX + faceR * 0.36, eyeY - faceR * 0.22 + wob);
-    ctx.stroke();
   } else {
     for (const d of [-eyeDX, eyeDX]) {
       const ex = d + gazeX;
@@ -672,11 +740,11 @@ function drawFaceLayer(
     }
   }
 
-  // 腮红(热)或冷色腮(凉)
-  if (temp >= 45 || temp <= 14) {
+  // 腮红(热)或冷色腮(凉)。烫得越狠越红 —— 分区强度直接进颜色,不另设阈值
+  if (heat || zone === 'cool' || zone === 'cold') {
     ctx.save();
-    ctx.globalAlpha = 0.35;
-    ctx.fillStyle = temp >= 45 ? P.warm : P.sky;
+    ctx.globalAlpha = heat ? 0.3 + heatAmt * 0.4 : 0.3;
+    ctx.fillStyle = heat ? P.ember : P.sky;
     for (const d of [-faceR * 0.85, faceR * 0.85]) {
       ctx.beginPath();
       ctx.ellipse(d, faceR * 0.22, faceR * 0.2, faceR * 0.13, 0, 0, Math.PI * 2);
@@ -690,7 +758,20 @@ function drawFaceLayer(
   ctx.lineWidth = Math.max(2, faceR * 0.15);
   ctx.beginPath();
   const my = faceR * 0.3;
-  if (shaking || mood === 'refuse' || mood === 'give') {
+  if (empty) {
+    // 干旱:干瘪、往下拽的扁嘴 —— 不是难过,是"一滴都没有了"
+    ctx.moveTo(-faceR * 0.4, my + faceR * 0.22);
+    ctx.quadraticCurveTo(0, my + faceR * 0.04, faceR * 0.4, my + faceR * 0.22);
+  } else if (heat) {
+    // 受不了炎热:张着嘴喘气(一个向下压扁的椭圆),烫得越狠张越大
+    const open = faceR * (0.16 + heatAmt * 0.14);
+    ctx.save();
+    ctx.fillStyle = ink;
+    ctx.beginPath();
+    ctx.ellipse(0, my + faceR * 0.06, faceR * 0.22, open, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  } else if (shaking || mood === 'refuse' || mood === 'give') {
     // 被摇:先皱成波浪嘴,勉为其难时幅度收小(不再抗议)
     const k = mood === 'give' ? 0.6 : 1;
     ctx.moveTo(-faceR * 0.4, my + faceR * 0.1 * k);
@@ -706,8 +787,6 @@ function drawFaceLayer(
     const down = faceR * 0.34 * sulkAmt;
     ctx.moveTo(-faceR * 0.44, my + faceR * 0.2 * (1 - sulkAmt));
     ctx.quadraticCurveTo(-faceR * 0.05, my + down, faceR * 0.4, my + down);
-  } else if (empty) {
-    ctx.arc(0, faceR * 0.62, faceR * 0.32, Math.PI * 1.15, Math.PI * 1.85);
   } else {
     const smile = level > 0.45 ? 0.55 : level > 0.22 ? 0.2 : -0.35;
     ctx.moveTo(-faceR * 0.42, my);
@@ -730,14 +809,21 @@ function drawFaceLayer(
     }
   }
 
-  // 热水脑门一点汗
-  if (temp >= 60 && !shaking && !empty) {
+  // 受不了炎热:脑门冒汗,滴数与大小随高温区的强度走(52℃ 一颗 → 65℃ 三颗)
+  if (heat) {
+    const drops = 1 + Math.round(heatAmt * 2);
     ctx.save();
-    ctx.globalAlpha = 0.7;
-    ctx.fillStyle = P.sky;
-    ctx.beginPath();
-    ctx.ellipse(faceR * 0.8, -faceR * 0.55, faceR * 0.1, faceR * 0.16, 0, 0, Math.PI * 2);
-    ctx.fill();
+    for (let k = 0; k < drops; k++) {
+      const slide = ((tSec * (0.35 + k * 0.12) + k * 0.4) % 1);
+      const dx = faceR * (0.55 + k * 0.24) * (k % 2 === 0 ? 1 : -1);
+      const dy = -faceR * 0.5 + slide * faceR * 0.55;
+      const r = faceR * (0.09 + 0.02 * heatAmt);
+      ctx.globalAlpha = 0.55 + 0.35 * (1 - slide);
+      ctx.fillStyle = P.sky;
+      ctx.beginPath();
+      ctx.ellipse(dx, dy, r * 0.8, r * 1.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 

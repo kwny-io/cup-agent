@@ -59,9 +59,26 @@ export const MAX_TAN = 0.73;
 /** 倾倒时冲流脉冲:让水"哗"地涌向低处,而不是瞬间摆好。 */
 export const TILT_SLOSH_PER_RAD = 600;
 
+/**
+ * 杯体要转多少弧度,才能让现在这条液面在**世界上**是水平的。
+ *
+ * 渲染方把整个杯子按这个角旋转,液面相对杯子的斜率正好被抵消 ——
+ * 于是"杯子跟着倾斜、水还是平的"成立,且与缓动后的 slopeTan 逐帧一致
+ * (不另取原始遥测,免得杯子和水各抖各的)。
+ */
+export function cupTiltFromSlope(slopeTan: number): number {
+  return Math.atan(slopeTan);
+}
+
+/**
+ * 视觉倾斜收窄系数:液面 tan 比真实倾角 tan 略小(真实杯里水不会齐到杯壁)。
+ * 渲染方要反解倾角时用它,别在别处再写一份 0.92。
+ */
+const TILT_VISUAL_GAIN = 0.92;
+
 /** 视觉倾角 → tan(倾角)。垂直方向略收(真实杯里水不会齐到杯壁)。 */
 function clampTan(rad: number): number {
-  const t = Math.tan(rad) * 0.92;
+  const t = Math.tan(rad) * TILT_VISUAL_GAIN;
   if (t > MAX_TAN) return MAX_TAN;
   if (t < -MAX_TAN) return -MAX_TAN;
   return t;

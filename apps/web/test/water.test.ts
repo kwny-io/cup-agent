@@ -9,7 +9,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { WaterWave, FIXED_DT, MAX_TAN, SHAKE_DRIVE_AMP, SHAKE_HZ } from '../src/lib/water.ts';
+import {
+  WaterWave,
+  FIXED_DT,
+  MAX_TAN,
+  SHAKE_DRIVE_AMP,
+  SHAKE_HZ,
+  cupTiltFromSlope,
+} from '../src/lib/water.ts';
 
 const maxAbs = (a: Float32Array) => a.reduce((m, x) => Math.max(m, Math.abs(x)), 0);
 const mean = (a: Float32Array) => a.reduce((s, x) => s + x, 0) / a.length;
@@ -125,4 +132,46 @@ test('固定步长:步长粗细不改变物理结果(帧率无关)', () => {
     Math.abs(a - b) / Math.max(a, b) < 0.25,
     `步长影响了结果:粗=${a.toFixed(1)} 细=${b.toFixed(1)}`,
   );
+});
+
+// ── 杯体随倾斜旋转(「卡通杯没跟着倾斜」的修复)────────────────
+
+test('杯体旋转角 = atan(液面 slope),与 tan 互逆', () => {
+  for (const tan of [-0.5, -0.1, 0, 0.12, 0.4, 0.73]) {
+    const rad = cupTiltFromSlope(tan);
+    assert.ok(Math.abs(Math.tan(rad) - tan) < 1e-9, `tan=${tan} 反解不回去:${Math.tan(rad)}`);
+  }
+  assert.equal(cupTiltFromSlope(0), 0, '正立时不转');
+});
+
+test('杯体转过去、液面在世界上就是平的:斜率相加抵消', () => {
+  const w = new WaterWave();
+  const tiltRad = (30 * Math.PI) / 180;
+  for (let t = 0; t < 5; t += FIXED_DT) {
+    w.applyTilt(tiltRad, FIXED_DT);
+    w.step(FIXED_DT);
+  }
+  const cupRad = cupTiltFromSlope(w.slopeTan);
+  // 杯内液面相对杯体是 -atan(slopeTan)(右高 = y 更小);再叠上杯体转角
+  // 得到世界倾角。tan(A+B),B = atan(-slopeTan) → 恰好抵消。
+  const a = Math.tan(cupRad);
+  const b = -w.slopeTan;
+  const worldSlopeTan = (a + b) / (1 - a * b);
+  assert.ok(Math.abs(worldSlopeTan) < 1e-9, `世界液面没被补偿平:${worldSlopeTan}`);
+  assert.ok(Math.abs(cupRad) > 0.2, '杯体应确实转了(不是原地不动)');
+});
+
+test('倾斜回正:杯体角度跟着回到 0', () => {
+  const w = new WaterWave();
+  const tiltRad = (30 * Math.PI) / 180;
+  for (let t = 0; t < 3; t += FIXED_DT) {
+    w.applyTilt(tiltRad, FIXED_DT);
+    w.step(FIXED_DT);
+  }
+  assert.ok(Math.abs(cupTiltFromSlope(w.slopeTan)) > 0.2, '前段应倾斜');
+  for (let t = 0; t < 3; t += FIXED_DT) {
+    w.applyTilt(0, FIXED_DT);
+    w.step(FIXED_DT);
+  }
+  assert.ok(Math.abs(cupTiltFromSlope(w.slopeTan)) < 0.02, '回正后应几乎直立');
 });
