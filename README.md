@@ -11,6 +11,9 @@ apps/server         后端:ingest 适配层 → 事件管线(双源融合)→ St
 apps/web            前端:卡通杯 + 数据看板 + 对话(见 apps/web/README.md)
 ```
 
+上线:后端有 `Dockerfile` + `docker-compose.yml`,`docker compose up -d --build` 即起;
+环境变量、TLS、密钥与暴露面见 [DEPLOY.md](DEPLOY.md)。
+
 ## 快速开始
 
 ```bash

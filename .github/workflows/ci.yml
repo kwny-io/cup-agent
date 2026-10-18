@@ -1,10 +1,11 @@
 name: CI
 
-# 每次推 main / 开 PR 都跑。四个互不依赖的闸:
+# 每次推 main / 开 PR 都跑。五个互不依赖的闸:
 #   1. 类型检查  —— 根 tsc + apps/web 的 tsc(web 此前不在根脚本里,已并入 root typecheck)
 #   2. JS 测试   —— 契约 + 模拟器 + 后端 + 固件契约镜像守护(node --test,零基建:不设 CUP_PG_URL)
 #   3. 固件宿主单测 —— 零 IDF 依赖的纯 C 层(gcc 直接编,见 firmware/README §一)
-#   4. Postgres 契约 —— 服务容器 + CUP_PG_URL,真跑 PgStore 半边(可选闸,挂了不红主套件)
+#   4. E2E 冒烟  —— 真模拟器 → 真后端 → 真 PG,一条链跑通(不只验单个 store 方法)
+#   5. Postgres 契约 —— 服务容器 + CUP_PG_URL,真跑 PgStore 半边(可选闸,挂了不红主套件)
 # 固件那一闸尤其关键:本机(开发机)不带 C 编译器,纯 C 层只能靠 CI 兜住。
 on:
   push:
@@ -47,6 +48,38 @@ jobs:
       # ubuntu-latest 自带 gcc(cc → gcc)。不装 ESP-IDF:跑的只是零 IDF 依赖的纯 C 层。
       - name: 跑宿主单测
         run: bash firmware/lid/host_test/run_all.sh
+
+  # 端到端冒烟:**真模拟器 → 真 WS 出口 → 真 sim-adapter → 真管线 → 真 PG**。
+  # 与 pg 闸的分工:pg 闸验"每个 store 方法对不对";这里验"两个组件拼起来能不能跑通",
+  # 且落点是真的库(表/分区/序列化全走一遍)。测试自建一次性 schema,无需前置步骤。
+  e2e:
+    name: E2E 冒烟(模拟器 → 后端 → PG)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cupdev
+          POSTGRES_PASSWORD: cupdev
+          POSTGRES_DB: cupdev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: 跑 e2e 冒烟
+        env:
+          CUP_PG_URL: postgres://cupdev:cupdev@localhost:5432/cupdev
+        run: node --test apps/server/test/e2e-smoke.test.ts
 
   # 独立一闸:契约测试的 Pg 半边真跑(其余套件不设 CUP_PG_URL 即自动 skip,
   # 故本 job 挂了不影响主套件)。契约测试自建一次性 schema + 跑迁移,故无需额外步骤。

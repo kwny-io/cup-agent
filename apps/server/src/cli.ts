@@ -56,11 +56,20 @@ interface Args {
   logFormat: 'text' | 'json';
   /** 持久化日志的 JSONL 文件出口目录;CUP_LOG_DIR,不设 = 不落文件 */
   logDir: string | null;
+  /** 监听地址;CUP_HOST,默认 127.0.0.1(容器内须设 0.0.0.0) */
+  host: string;
+  /** 允许的跨域来源白名单(逗号分隔);CUP_CORS_ORIGINS,不设 = `*` */
+  corsOrigins: readonly string[] | null;
+  /** 信任 x-forwarded-for;CUP_TRUST_PROXY=1 */
+  trustProxy: boolean;
+  /** TLS 证书/私钥文件路径;CUP_TLS_CERT / CUP_TLS_KEY */
+  tlsCertPath: string | null;
+  tlsKeyPath: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
   const a: Args = {
-    port: 8788,
+    port: Number(process.env.CUP_PORT) || 8788,
     simUrl: null,
     mqttUrl: process.env.CUP_MQTT_URL ?? null,
     quiet: false,
@@ -76,6 +85,11 @@ function parseArgs(argv: string[]): Args {
     logLevel: parseLogLevel(process.env.CUP_LOG_LEVEL),
     logFormat: parseLogFormat(process.env.CUP_LOG_FORMAT),
     logDir: process.env.CUP_LOG_DIR ?? null,
+    host: process.env.CUP_HOST ?? '127.0.0.1',
+    corsOrigins: csvList(process.env.CUP_CORS_ORIGINS),
+    trustProxy: process.env.CUP_TRUST_PROXY === '1' || process.env.CUP_TRUST_PROXY === 'true',
+    tlsCertPath: process.env.CUP_TLS_CERT ?? null,
+    tlsKeyPath: process.env.CUP_TLS_KEY ?? null,
   };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -207,6 +221,18 @@ function parseArgs(argv: string[]): Args {
         console.log('  CUP_EVENTS_RETAIN_DAYS=<n>     事件保留天数(默认 395,约 13 个月)。');
         console.log('  CUP_SERVER_LOGS_RETAIN_DAYS=<n> 服务日志保留天数(默认 90)。');
         console.log('  保留策略按**整月分区**删(不逐行删);cutoff 所在月保留、当前月永不删。');
+        console.log('');
+        console.log('部署 / 网络(容器与生产必需):');
+        console.log('  CUP_PORT=<端口>            监听端口(默认 8788;或 --port)。');
+        console.log('  CUP_HOST=<地址>            监听地址(默认 127.0.0.1;容器内必须设 0.0.0.0)。');
+        console.log('  CUP_DATA_DIR=<目录>        非 PG 数据的落盘目录(默认 ./.data)。');
+        console.log('  CUP_TLS_CERT=<pem 路径>    TLS 证书;与 CUP_TLS_KEY 同时给才启用 https(否则明文)。');
+        console.log('  CUP_TLS_KEY=<pem 路径>     TLS 私钥。启用后自动加 HSTS。');
+        console.log('  CUP_CORS_ORIGINS=<来源,逗号分隔>  跨域白名单(如 https://cup.example.com);不设 = *(仅本地开发)。');
+        console.log('  CUP_TRUST_PROXY=1          信任 x-forwarded-for 首跳作客户端 IP(仅在反向代理后面开)。');
+        console.log('  限流默认开(零配置):认证 20/分、写 300/分、其余 1200/分;超限回 429 + Retry-After。');
+        console.log('');
+        console.log('  docker compose up -d          见仓库根 DEPLOY.md(Dockerfile + compose 已备)。');
         process.exit(0);
     }
   }
@@ -245,6 +271,13 @@ function emailList(raw: string | undefined): readonly string[] | undefined {
   if (!raw) return undefined;
   const list = raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
   return list.length > 0 ? list : undefined;
+}
+
+/** 逗号分隔的普通名单(CORS 来源等);未设/空 → null。 */
+function csvList(raw: string | undefined): readonly string[] | null {
+  if (!raw) return null;
+  const list = raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  return list.length > 0 ? list : null;
 }
 
 async function main(): Promise<void> {
@@ -359,6 +392,10 @@ async function main(): Promise<void> {
     retention: retentionOptions(),
     requireClaim: args.requireClaim,
     marketOpen: args.marketOpen,
+    corsOrigins: args.corsOrigins ?? undefined,
+    trustProxy: args.trustProxy,
+    tlsCertPath: args.tlsCertPath,
+    tlsKeyPath: args.tlsKeyPath,
   });
 
   // 官方人格包种子(P4-D3 冷启动):幂等,已存在则跳过。放这里而非 createApp 内 ——
@@ -366,13 +403,23 @@ async function main(): Promise<void> {
   const seeded = await seedOfficialPacks(app.accounts, Date.now());
   if (seeded) log(`人格市场种子:新种入 ${seeded} 个官方包`);
 
-  const port = await app.listen(args.port);
+  const port = await app.listen(args.port, args.host);
 
+  const scheme = app.tls ? 'https' : 'http';
+  const wsScheme = app.tls ? 'wss' : 'ws';
+  const shownHost = args.host === '0.0.0.0' ? 'localhost' : args.host;
   console.log('─'.repeat(64));
-  console.log(`后端启动 | API http://localhost:${port}`);
-  console.log(`  实时: ws://localhost:${port}/cups/<cup_id>/live`);
-  console.log(`  战报: http://localhost:${port}/cups/<cup_id>/report/latest`);
-  console.log(`  对话: POST http://localhost:${port}/cups/<cup_id>/ask  { q }`);
+  console.log(`后端启动 | API ${scheme}://${shownHost}:${port}  (监听 ${args.host}${args.host === '0.0.0.0' ? ',对外可达' : ',仅本机'})`);
+  console.log(`  实时: ${wsScheme}://${shownHost}:${port}/cups/<cup_id>/live`);
+  console.log(`  战报: ${scheme}://${shownHost}:${port}/cups/<cup_id>/report/latest`);
+  console.log(`  对话: POST ${scheme}://${shownHost}:${port}/cups/<cup_id>/ask  { q }`);
+  console.log(`  TLS: ${app.tls ? '开(CUP_TLS_CERT/KEY)' : '关(明文;生产请配 TLS 或在上游反代终止)'}`);
+  console.log(
+    `  跨域: ${args.corsOrigins ? args.corsOrigins.join(', ') : '*(通配,仅适合本地开发;CUP_CORS_ORIGINS 可收紧)'}`,
+  );
+  console.log(
+    `  限流: 开(认证 20/分 · 写 300/分 · 其余 1200/分${args.trustProxy ? ' · 信任 x-forwarded-for' : ''})`,
+  );
   console.log(`  模拟器: ${args.simUrl ?? '(未连接,仅起 API)'}`);
   console.log(`  MQTT: ${args.mqttUrl ?? '(未连接,不接真机)'}`);
   if (args.mqttUrl) {

@@ -268,7 +268,16 @@ export type {
 } from './core/chat/types.ts';
 export { ProactiveScheduler, type ProactiveDeps } from './core/proactive.ts';
 export { LiveHub, type LiveFrame } from './api/live.ts';
-export { createApiServer, type ApiDeps } from './api/http.ts';
+export { createApiServer, type ApiDeps, type ApiServer } from './api/http.ts';
+export {
+  createRateLimiter,
+  classifyBucket,
+  clientKey,
+  DEFAULT_RULES,
+  type RateLimiter,
+  type RateLimitVerdict,
+  type BucketRule,
+} from './api/rate-limit.ts';
 export { startSimAdapter, type SimAdapterHandle, type SimAdapterOptions } from './ingest/sim-adapter.ts';
 export {
   startMqttAdapter,

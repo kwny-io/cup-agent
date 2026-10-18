@@ -8,7 +8,16 @@
  * 用 ws 的 noServer 模式:HTTP 与 WS 共用同一个端口,由 http.ts 在同源上升级。
  */
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { Server } from 'node:http';
+import type { IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
+
+/** http.Server 与 https.Server 共有的那部分(本类只用 `upgrade` 事件) */
+interface UpgradeCapable {
+  on(
+    event: 'upgrade',
+    listener: (req: IncomingMessage, socket: Duplex, head: Buffer) => void,
+  ): unknown;
+}
 
 export interface LiveFrame {
   /** 帧类型:给前端一个 switch 的依据 */
@@ -38,7 +47,7 @@ export class LiveHub {
   }
 
   /** 挂到 http server 上;只在 /cups/:id/live(或 /live)路径上升级 */
-  attach(server: Server): void {
+  attach(server: UpgradeCapable): void {
     server.on('upgrade', (req, socket, head) => {
       const url = new URL(req.url ?? '/', 'http://localhost');
       const m = url.pathname.match(/^\/cups\/([^/]+)\/live$/);

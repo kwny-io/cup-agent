@@ -26,7 +26,9 @@
  * 不在各处理器里散落 if。(`--read-auth` 旧占位旗已退役:S4 的会话闸取代它。)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer as createSecureServer, type Server as SecureServer } from 'node:https';
 import { randomBytes } from 'node:crypto';
+import { classifyBucket, clientKey, createRateLimiter, type RateLimiter } from './rate-limit.ts';
 import type { Command } from '@cup/contract';
 import { CUP } from '@cup/contract';
 import type { DeleteScope, Store } from '../store/store.ts';
@@ -150,9 +152,27 @@ export interface ApiDeps {
   pgPool?: Pool;
   /** 触发保留清理时的报错口(默认静默);便于测试断言 */
   log?: (msg: string, level?: LogLevel) => void;
+  /**
+   * 允许的跨域来源白名单(env `CUP_CORS_ORIGINS`,逗号分隔)。
+   * 不设 → 保持旧行为 `Access-Control-Allow-Origin: *`(本地开发零配置)。
+   * 生产应显式列出前端域名 —— `*` 配合 `Authorization` 头意味着任何站点都能带用户令牌调本 API。
+   */
+  corsOrigins?: readonly string[];
+  /**
+   * 速率限制器。不传 → 按默认阈值建一个;传 `false` → 关闭(仅测试/内网)。
+   * 阈值见 `rate-limit.ts` 的 `DEFAULT_RULES`(认证口 20/分、写口 300/分、其余 1200/分)。
+   */
+  rateLimit?: RateLimiter | false;
+  /** 信任 `x-forwarded-for` 首跳作客户端 IP(部署在反向代理后才开;直连时开 = 可被伪造) */
+  trustProxy?: boolean;
+  /** TLS 证书/私钥(给 `createSecureServer`);不给 → 明文 HTTP */
+  tls?: { cert: string | Buffer; key: string | Buffer } | null;
 }
 
-export function createApiServer(deps: ApiDeps): Server {
+/** HTTP 或 HTTPS server —— 两者都支持 `.listen/.close/.on('upgrade')` */
+export type ApiServer = Server | SecureServer;
+
+export function createApiServer(deps: ApiDeps): ApiServer {
   // 只解析一次:对话模型与记忆必须是**跨请求存活**的实例(否则每问一句就失忆)
   const resolved: ApiDeps = {
     ...deps,
@@ -162,8 +182,15 @@ export function createApiServer(deps: ApiDeps): Server {
     profiles: deps.profiles ?? new MemoryProfileStore(),
   };
   const reqLog = (resolved.log ?? (() => {})) as (msg: string, level?: LogLevel) => void;
-  return createServer((req, res) => {
-    cors(res);
+  const limiter = deps.rateLimit === false ? null : (deps.rateLimit ?? createRateLimiter());
+  const trustProxy = deps.trustProxy === true;
+  const corsOrigins = deps.corsOrigins ?? null;
+  const secure = deps.tls != null;
+
+  const handler = (req: IncomingMessage, res: ServerResponse): void => {
+    // 安全头与 CORS 都在**发头之前**统一设 —— `send()` 的 writeHead 会带上它们。
+    applySecurityHeaders(res, { secure, origin: originFor(req, corsOrigins) });
+    cors(res, originFor(req, corsOrigins));
     if (req.method === 'OPTIONS') {
       res.writeHead(204).end();
       return;
@@ -172,6 +199,23 @@ export function createApiServer(deps: ApiDeps): Server {
     const reqId = randomBytes(6).toString('hex');
     const started = Date.now();
     res.setHeader('x-request-id', reqId);
+
+    // 限流:入口最早处,先于任何鉴权/落库 —— 被限的请求不消耗任何应用资源。
+    // 每个请求只记一个桶(最具体的那个),见 rate-limit.ts 的取舍说明。
+    if (limiter) {
+      const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+      const verdict = limiter.check(clientKey(req, trustProxy), classifyBucket(req.method ?? 'GET', pathname));
+      if (!verdict.ok) {
+        res.setHeader('Retry-After', String(verdict.retryAfterSec));
+        send(res, 429, { error: 'rate_limited', bucket: verdict.bucket, retry_after: verdict.retryAfterSec });
+        reqLog(
+          `${req.method ?? 'GET'} ${pathname} → 429 限流(bucket=${verdict.bucket}) rid=${reqId}`,
+          'warn',
+        );
+        return;
+      }
+    }
+
     // route 现在 async(Store 全 Promise 化):同步抛与异步拒绝一并在此收口。
     // headersSent 守卫:处理器可能已 send 后才抛(极罕见),避免二次写头。
     void route(req, res, resolved)
@@ -189,7 +233,9 @@ export function createApiServer(deps: ApiDeps): Server {
           level,
         );
       });
-  });
+  };
+
+  return deps.tls ? createSecureServer({ cert: deps.tls.cert, key: deps.tls.key }, handler) : createServer(handler);
 }
 
 async function route(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<void> {
@@ -1756,11 +1802,52 @@ async function authorize(
 
 // ── 工具 ───────────────────────────────────────────────────────────
 
-function cors(res: ServerResponse): void {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+/**
+ * 决定本次响应的 `Access-Control-Allow-Origin`。
+ * 白名单未配 → `*`(本地开发零配置);配了 → 只回显白名单内的 `Origin`,
+ * 且带 `Vary: Origin` 防止缓存把一个源的响应喂给另一个源。空串 = 不设(跨域被浏览器拦下)。
+ */
+function originFor(req: IncomingMessage, allow: readonly string[] | null): string {
+  if (!allow || allow.length === 0) return '*';
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && allow.includes(origin)) return origin;
+  return '';
+}
+
+function cors(res: ServerResponse, origin: string): void {
+  if (origin === '') return; // 白名单未命中:不发布 CORS 头,浏览器侧自然拒绝
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  if (origin !== '*') {
+    res.setHeader('Vary', 'Origin');
+    // 带凭据的跨域(浏览器端若改用 cookie 会话)需要它;用 Bearer 时可以共存。
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   // authorization:账号会话用 Bearer 令牌(见 §二);缺它浏览器预检会拒掉带令牌的请求
   res.setHeader('Access-Control-Allow-Headers', 'content-type,x-api-key,authorization');
+  res.setHeader('Access-Control-Expose-Headers', 'x-request-id,retry-after');
+}
+
+/**
+ * 安全响应头 —— 统一在入口设一次,故所有响应(含 401/429/500 与 `send()` 之外的手写 204)都带。
+ *
+ * 取舍:
+ *   · 这是**纯 JSON API**,不吐 HTML → CSP 取最严(`default-src 'none'`),前端静态站点由
+ *     自己的 web 服务器发 CSP,不归这里管。
+ *   · `X-Frame-Options: DENY` + `frame-ancestors 'none'` 防嵌入(API 响应被当文档嵌入没意义)。
+ *   · HSTS 只在**真的走 TLS**时发 —— 明文部署下发 HSTS 会把用户浏览器锁死在 https 上。
+ *   · `Referrer-Policy: no-referrer` 避免把带 cup_id 的 URL 漏给第三方。
+ */
+function applySecurityHeaders(res: ServerResponse, opts: { secure: boolean; origin: string }): void {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  if (opts.secure) {
+    // 两年 + 子域。只有在确认全站(含子域)都能走 https 后才该开;TLS 未配时不会发,见上。
+    res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+  }
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {

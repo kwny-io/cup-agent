@@ -17,6 +17,10 @@ export interface WsHandle {
   broadcast: (frame: Frame) => void;
   close: () => void;
   clientCount: () => number;
+  /** 实际监听的端口(`port=0` 时由内核分配,起来前返回 0) */
+  port: () => number;
+  /** listen 落定;`await` 之后 `port()` 才可信 */
+  ready: () => Promise<void>;
 }
 
 export interface WsServerOptions {
@@ -42,6 +46,11 @@ export function startWsServer(
 
   const wss = new WebSocketServer({ port });
   const clients = new Set<WebSocket>();
+  // 等 listen 落定再广播 —— port=0 时端口要到这会儿才可读;启动期不该静默丢首帧。
+  const ready = new Promise<void>((resolve, reject) => {
+    wss.once('listening', () => resolve());
+    wss.once('error', reject);
+  });
 
   wss.on('connection', (sock) => {
     clients.add(sock);
@@ -72,6 +81,12 @@ export function startWsServer(
       wss.close();
     },
     clientCount: () => clients.size,
+    port() {
+      const addr = wss.address();
+      return typeof addr === 'object' && addr ? addr.port : 0;
+    },
+    /** listen 落定(port=0 时用来读真实端口) */
+    ready: () => ready,
   };
 }
 

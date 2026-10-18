@@ -1,0 +1,91 @@
+# 本地/单机部署编排:后端 API + Postgres。
+#
+#   docker compose up -d --build        # 起库 → 迁移 → 起服务
+#   curl http://127.0.0.1:8788/healthz  # {"ok":true,...}
+#   docker compose logs -f app
+#
+# 前端不在这里:apps/web 是独立静态站点(vite build → apps/web/dist),由你自己的
+# web 服务器/CDN 托管,并通过 ?cloud=<api 地址> 指向本服务。见 DEPLOY.md。
+
+name: cup-agent
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cupdev
+      POSTGRES_PASSWORD: cupdev
+      POSTGRES_DB: cupdev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 默认**不**把库端口发布到宿主机:app 走 compose 内网(cup-agent_default)连 db 就够,
+    # 少一个暴露面,也避免和本机开发用的 cup-agent-pg(:5433)撞端口。
+    # 需要从宿主机 psql 进去看,取消下面注释(换个不冲突的宿主端口):
+    # ports:
+    #   - "127.0.0.1:55443:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cupdev -d cupdev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # 一次性迁移容器 —— 每次 up 都会跑,已是最新则秒退。放在这里而不是让 app 自己迁,
+  # 是为了让"表结构"和"服务进程"解耦:app 重启不会重跑迁移,伸缩多副本也不会打架。
+  migrate:
+    build: .
+    image: cup-agent:local
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CUP_PG_URL: postgres://cupdev:cupdev@db:5432/cupdev
+    command: ["node", "apps/server/src/cli.ts", "--migrate"]
+
+  app:
+    build: .
+    image: cup-agent:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      CUP_PG_URL: postgres://cupdev:cupdev@db:5432/cupdev
+      # 日界与日志时间戳按哪个时区算(不设 = 容器 UTC)。
+      CUP_TZ: Asia/Shanghai
+      # ↓ 生产必改:管理员/运维/审核邮箱名单(逗号分隔)。
+      # CUP_ADMIN_EMAIL: you@example.com
+      # CUP_OPS_EMAILS: ops@example.com
+      # CUP_REVIEWER_EMAILS: reviewer@example.com
+      #
+      # ↓ 写端点鉴权 key。不设则启动时随机生成并打进启动横幅 —— 容器里横幅看不方便,
+      #   建议显式给定(docker compose logs app | grep x-api-key 也能捞到随机值)。
+      # CUP_API_KEY: change-me
+      #
+      # ↓ 两个"一旦丢了就解不开"的密钥。不设则落盘到 /app/.data(随卷持久,也能用),但
+      #   多副本/重建卷就必须显式给同一份,否则已绑定的杯子和已存的模型 key 全作废。
+      # CUP_CLAIM_PEPPER: <base64, 32B>
+      # CUP_LLM_ENC_KEY: <base64, 32B>
+      #
+      # ↓ 跨域白名单。前端与 API 同域时可不管;不同域必须列出前端源(不设 = * 仅适合本地)。
+      # CUP_CORS_ORIGINS: https://cup.example.com
+      #
+      # ↓ 若把 TLS 交给前置反代(推荐的常规做法),保持明文并打开这两项:
+      # CUP_TRUST_PROXY: "1"
+      # CUP_PORT 已在镜像里设为 8788;CUP_HOST 已设为 0.0.0.0。
+    volumes:
+      # 持久数据:claim-pepper / llm-enc-key / social.json 等非 PG 状态。
+      # **必须持久化**,否则每次重建容器都换一份密钥。
+      - appdata:/app/.data
+      # JSONL 日志,给宿主机上的 filebeat/fluentd 直接 tail。
+      - applogs:/app/logs
+    ports:
+      - "8788:8788"
+
+volumes:
+  pgdata:
+  appdata:
+  applogs:

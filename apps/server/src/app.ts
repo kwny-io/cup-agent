@@ -9,7 +9,8 @@ import { Pipeline } from './core/pipeline.ts';
 import { CommandQueue } from './core/commands.ts';
 import { makeGrowthNotifier } from './core/growth-notify.ts';
 import { LiveHub } from './api/live.ts';
-import { createApiServer } from './api/http.ts';
+import { createApiServer, type ApiServer } from './api/http.ts';
+import type { RateLimiter } from './api/rate-limit.ts';
 import { startSimAdapter, type SimAdapterHandle } from './ingest/sim-adapter.ts';
 import { startMqttAdapter, type MqttAdapterHandle } from './ingest/mqtt-adapter.ts';
 import { createNodeMqttTransport } from './ingest/mqtt-node-transport.ts';
@@ -61,7 +62,7 @@ import { PgCupLlmStore } from './store/pg/cup-llm.ts';
 import { PgActivePackStore } from './store/pg/active-pack.ts';
 import { PgInviteStore } from './store/pg/invite.ts';
 import { randomBytes } from 'node:crypto';
-import type { Server } from 'node:http';
+import { readFileSync } from 'node:fs';
 
 export interface AppOptions {
   /** 模拟器 WS 地址;不给则只起 API(测试/离线可用) */
@@ -170,6 +171,21 @@ export interface AppOptions {
   serverLogs?: ServerLogStore;
   /** 保留策略选项(传给 `/admin/logs/retain`;env 由 cli 读入) */
   retention?: RetentionOptions;
+  /** 允许的跨域来源白名单(env `CUP_CORS_ORIGINS`);不设 → `*`(仅适合本地开发) */
+  corsOrigins?: readonly string[];
+  /** 是否信任 `x-forwarded-for`(env `CUP_TRUST_PROXY`);部署在反代后才开 */
+  trustProxy?: boolean;
+  /**
+   * 速率限制:不传 = 默认令牌桶(见 api/rate-limit.ts);`false` = 关掉(仅测试/内网);
+   * 传实例 = 自定义阈值(部署按实际流量调,见 DEPLOY.md)。
+   */
+  rateLimit?: RateLimiter | false;
+  /**
+   * TLS(env `CUP_TLS_CERT` / `CUP_TLS_KEY` 文件路径)。给了即用 https 起服务,
+   * 并在响应上加 HSTS。容器/生产应走这里或在上游反代终止 TLS。
+   */
+  tlsCertPath?: string | null;
+  tlsKeyPath?: string | null;
 }
 
 export interface App {
@@ -202,7 +218,9 @@ export interface App {
   apiKey: string | null;
   /** key 是否由 createApp 随机生成(供 cli 决定是否打到横幅;env 提供的则不回显) */
   apiKeyGenerated: boolean;
-  server: Server;
+  server: ApiServer;
+  /** 是否走 TLS(供 cli 横幅显示协议) */
+  tls: boolean;
   listen(port: number, host?: string): Promise<number>;
   /** 已连上的模拟器适配器(若配了 simUrl) */
   adapter: SimAdapterHandle | null;
@@ -337,6 +355,16 @@ export function createApp(opts: AppOptions = {}): App {
   const apiKeyGenerated = opts.allowUnauth !== true && envKey === '';
   const apiKey = opts.allowUnauth === true ? undefined : envKey || randomBytes(24).toString('hex');
 
+  // TLS:两个路径都给才启用(给一个 = 配置错误,宁可早失败也别静默退回明文)。
+  if ((opts.tlsCertPath ?? null) !== null || (opts.tlsKeyPath ?? null) !== null) {
+    if (!opts.tlsCertPath || !opts.tlsKeyPath) {
+      throw new Error('TLS 配置不完整:cert 与 key 必须同时提供(CUP_TLS_CERT / CUP_TLS_KEY)');
+    }
+  }
+  const tls = opts.tlsCertPath && opts.tlsKeyPath
+    ? { cert: readFileSync(opts.tlsCertPath), key: readFileSync(opts.tlsKeyPath) }
+    : null;
+
   const server = createApiServer({
     store,
     pipeline,
@@ -362,6 +390,10 @@ export function createApp(opts: AppOptions = {}): App {
     serverLogs,
     pgPool: pool ?? undefined,
     retention: opts.retention,
+    corsOrigins: opts.corsOrigins,
+    trustProxy: opts.trustProxy,
+    rateLimit: opts.rateLimit === false ? false : opts.rateLimit,
+    tls,
     log,
   });
   live.attach(server);
@@ -389,9 +421,10 @@ export function createApp(opts: AppOptions = {}): App {
     apiKey: apiKey ?? null,
     apiKeyGenerated,
     server,
+    tls: tls !== null,
     adapter,
     mqtt,
-    listen(port, host = '127.0.0.1') {
+    listen(port, host = process.env.CUP_HOST ?? '127.0.0.1') {
       return new Promise((resolve) => {
         server.listen(port, host, () => {
           const addr = server.address();

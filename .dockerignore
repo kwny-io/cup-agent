@@ -1,0 +1,31 @@
+# 构建上下文越小越好:node_modules 由 npm ci 在镜像内重建(本机的可能是别的平台),
+# 绝不能拷进去。
+node_modules
+**/node_modules
+
+.git
+.github
+.claude
+
+# 运行时状态与产物
+.data
+**/dist
+*.log
+.env
+.env.*
+_preview
+
+# 前端与模拟器都**不**进后端镜像,但它们的 package.json 必须留着 ——
+# npm ci 按 workspaces 校验整棵树,少了清单会直接失败。
+apps/web/src
+apps/web/test
+apps/web/public
+apps/web/index.html
+apps/web/vite.config.ts
+apps/web/tsconfig.json
+apps/simulator/src
+apps/simulator/test
+apps/simulator/public
+
+# 固件要 IDF 工具链,与后端镜像无关
+firmware
