@@ -16,11 +16,14 @@ apps/web            前端:卡通杯 + 数据看板 + 对话(见 apps/web/README
 
 ## 快速开始
 
+**前置条件**:Node **≥24**(本项目靠 Node 原生类型剥离直接跑 `.ts`,没有构建步骤)。
+版本不够时 `npm ci` 会当场拒绝(`.npmrc` 已开 `engine-strict`)。
+
 ```bash
-npm install
-npm test          # 314 个测试:契约 + 模拟器行为/手动控制 + 后端管线/验收/性格层/对话/画像蒸馏/MQTT/HTTP 中转/API/日界时区/记忆卡+recall/可信绑定(http 层含 PG 契约,无库自动 skip)
+npm ci
+npm test          # 520 个通过(2 个无 PG 自动 skip):契约 + 模拟器行为/手动控制 + 后端管线/验收/性格层/对话/画像蒸馏/MQTT/HTTP 中转/API/日界时区/记忆卡+recall/可信绑定(http 层含 PG 契约,无库自动 skip)
 npm run typecheck # 类型检查(根 tsc + apps/web)—— CI 三闸之一
-npm --workspace @cup/web test   # 前端 168 个测试:纯逻辑单测 + 组件级测试(jsdom 真挂载)
+npm --workspace @cup/web test   # 前端 350 个测试:纯逻辑单测 + 组件级测试(jsdom 真挂载)
 npm run sim       # 跑典型一天(默认 60× 加速)
 npm run server    # 起后端 API(:8788)
 ```
@@ -29,9 +32,12 @@ npm run server    # 起后端 API(:8788)
 
 ```bash
 node apps/simulator/src/cli.ts --ws 8787 --report-ms 10000   # 终端 1:模拟器流数据
-node apps/server/src/cli.ts --sim ws://localhost:8787         # 终端 2:后端收 + 出 API
+node apps/server/src/cli.ts --sim ws://localhost:8787 --allow-unauth   # 终端 2:后端收 + 出 API
 curl http://localhost:8788/cups/cup-A1B2C3/today             # 拉今日概览
 ```
+
+> `--allow-unauth` **只在本地联调用**。不带它时读端点要登录会话 + 杯子归属
+> (未登录 `401`),上面那条 `curl` 会失败。
 
 **前端接后端**(第三个终端,`apps/web`):
 
@@ -42,9 +48,13 @@ npm run dev --workspace @cup/web
 浏览器打开 `http://localhost:5173/?cloud=1` —— 前端连**后端**(而非直连模拟器),
 看板的"今日已喝 / 次数 / 连续天数"用后端日聚合,杯子动画用后端推送的遥测。
 
-> **写端点鉴权(R10-B)**:后端写端点(`PUT /goal`、`POST /config`、`POST /ask`)默认强制
-> `x-api-key`。前端云模式可用 `?cloud=1&key=<key>` 把该头附到写请求上;不带 `key` 时不发该头
-> (读正常、写会 401)。**本地开发给后端加 `--allow-unauth`** 即免 key;R10-B 只挡写、不挡读。
+> **端点鉴权**:分两档,默认都开。
+> - **写端点**(`PUT /goal`、`POST /config`、`POST /ask`)要 `x-api-key`;前端云模式用
+>   `?cloud=1&key=<key>` 把该头附上,不带 `key` 时写请求 `401`。
+> - **读端点**(`GET /today` `/series` `/events` `/state` `/report/*` 等)要**登录会话 + 杯子归属**:
+>   未登录 `401`,登录了但杯子不归你 `403`。前端登录后自动带 `Bearer`。
+>
+> **本地开发/联调**给后端加 `--allow-unauth`,读写都豁免(生产勿用)。
 
 常用命令:
 
@@ -117,7 +127,7 @@ node apps/simulator/src/cli.ts --ws 8787               # 起 WS
 见桌面文档《plan.md》。当前完成 **M0**(契约冻结 + 模拟器)、**M1**(后端骨架)、
 **M2**(前端外壳 + 看板,已接后端)、**M3**(卡通杯 + 水波物理,英雄功能成型)、
 **M4**(性格层 LLM + 战报)、**M5-对话**(软件线:问杯子 / 记忆 / 主动开口)。
-**M5 真机 bring-up**(杯盖固件 `firmware/lid/`,源码就绪、宿主单测 20 组 536 条全绿,**待真板编译烧录**)
+**M5 真机 bring-up**(杯盖固件 `firmware/lid/`,源码就绪、宿主单测 20 组 562 条全绿,**待真板编译烧录**)
 与 **M6 底座**属硬件线,按契约并行推进。
 
 ## 贡献
