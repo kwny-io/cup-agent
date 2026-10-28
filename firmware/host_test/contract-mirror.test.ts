@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { EVENT_TYPES, MOTION_STATES, DERIVED_BY } from '@cup/contract';
+import { EVENT_TYPES, MOTION_STATES, DERIVED_BY, CUP, SCALE, IMU_THRESH, ALERT } from '@cup/contract';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const common = join(here, '..', 'components', 'cup_common');
@@ -120,6 +120,55 @@ function simConst(name: string): number {
   assert.ok(m, `lid.ts 应含常量 ${name}`);
   return Number(m[1]);
 }
+
+// ── 契约阈值镜像:固件宏 ↔ constants.ts ─────────────────────────────
+// contract_dev.h 的 CUP_* / SCALE_* / IMU_* / ALERT_* 都是**手写**的 constants.ts 镜像。
+// 枚举有上面的机器闸守着,数值没有 —— 改错一个数(zod 收包范围、端侧判定、固件夹紧)
+// 会让"固件以为值 X、契约规定值 Y"静默分叉,而这恰恰是最难在真板前发现的一类。
+// 只对表**两边都有**的项;固件独有的启发式(IMU_LIFTED_*、ALERT_TEMP_HYST_C、
+// ALERT_BATTERY_RESET_PCT、CMD_REPORT_MS_*)不在契约里,不在此列。
+
+test('[契约阈值镜像] CUP_* / SCALE_* / IMU_* / ALERT_* 固件宏与 constants.ts 数值一致', () => {
+  const pairs: Array<[string, number]> = [
+    // §6.1 杯体几何
+    ['CUP_CAPACITY_ML', CUP.capacity_ml],
+    ['CUP_INNER_MM', CUP.inner_mm],
+    ['CUP_TARE_G', CUP.tare_g],
+    ['CUP_G_PER_ML', CUP.g_per_ml],
+    // §6.2 底座称重
+    ['SCALE_SETTLE_WINDOW_MS', SCALE.settle_window_ms],
+    ['SCALE_SETTLE_STD_G', SCALE.settle_std_g],
+    ['SCALE_PRESENT_MIN_G', SCALE.present_min_g],
+    ['SCALE_DRINK_MIN_G', SCALE.drink_min_g],
+    ['SCALE_DRINK_MIN_ML', SCALE.drink_min_ml],
+    ['SCALE_OFF_BASE_DELAY_MS', SCALE.off_base_delay_ms],
+    // §6.3 杯盖 IMU
+    ['IMU_SHAKE_ENERGY_G', IMU_THRESH.shake_energy_g],
+    ['IMU_SHAKE_FRAMES', IMU_THRESH.shake_frames],
+    ['IMU_SHAKE_HOLD_MS', IMU_THRESH.shake_hold_ms],
+    ['IMU_TILT_DEG', IMU_THRESH.tilt_deg],
+    // §6.4 报警
+    ['ALERT_TEMP_HOT_C', ALERT.temp_hot_c],
+    ['ALERT_TEMP_COLD_C', ALERT.temp_cold_c],
+    ['ALERT_TILT_ALERT_MS', ALERT.tilt_alert_ms],
+    ['ALERT_BATTERY_LOW_PCT', ALERT.battery_low_pct],
+  ];
+  for (const [macro, expected] of pairs) {
+    assert.equal(
+      fwMacro(macro),
+      expected,
+      `${macro}(固件) 与 constants.ts 数值须一致 —— 两侧同源,改契约时这里必须同步`,
+    );
+  }
+});
+
+test('[契约阈值镜像] ml_per_mm 由 CUP 宏推导,与 constants.ts 同式', () => {
+  // 固件把它写成宏表达式 (CUP_CAPACITY_ML / CUP_INNER_MM),避免另抄一个约数。
+  // 这里实测两侧算出来必须是同一个数,而不是"看起来差不多"。
+  const fw = header.match(/#define\s+CUP_ML_PER_MM\s+\(\(float\)CUP_CAPACITY_ML\s*\/\s*\(float\)CUP_INNER_MM\)/);
+  assert.ok(fw, 'CUP_ML_PER_MM 应以容量/内高校度表达式定义,而非硬编码约数');
+  assert.equal(CUP.capacity_ml / CUP.inner_mm, CUP.ml_per_mm, '契约 ml_per_mm 应等于 容量/内高');
+});
 
 test('[手势阈值镜像] GESTURE_* 固件宏与模拟器常量数值一致', () => {
   const pairs: Array<[string, string]> = [

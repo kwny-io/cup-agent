@@ -97,6 +97,12 @@ export class Engine {
   private lastBasePresent: boolean;
   /** 是否有待定的 off_base(离开底座但还没到延迟阈值) */
   private offBasePending = false;
+  /**
+   * 本轮"离开"的编号。每次离开 +1,定时器记住自己那一轮:
+   * 短暂拿起后放回、再拿走时,上一轮的定时器不能消费这一轮的待定标记
+   * (否则 off_base 会从**第一次**拿起起算 2 分钟,提前误报)。
+   */
+  private offBaseSeq = 0;
   private rng: () => number;
   private running = false;
   /** 手动控制暂停:为真时 runRealtime 不推进引擎(脚本停摆,但连接仍在) */
@@ -196,10 +202,12 @@ export class Engine {
     if (this.lastBasePresent && !snap.onBase) {
       this.base.noteOffBase(toMs);
       this.offBasePending = true;
+      const seq = ++this.offBaseSeq;
       this.scheduler.at(
         toMs + SCALE.off_base_delay_ms,
         () => {
-          if (this.offBasePending) {
+          // 只有"仍是同一轮离开"的定时器才有资格发;更早那轮的定时器直接作废
+          if (this.offBasePending && seq === this.offBaseSeq) {
             this.offBasePending = false;
             this.enqueueEvent({
               v: 1,

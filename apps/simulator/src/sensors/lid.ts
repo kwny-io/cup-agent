@@ -55,6 +55,8 @@ export class LidSensor {
   private lastShakeMs = -Infinity;
   private shaking = false;
   private tiltSinceMs: number | null = null;
+  /** 本段倾倒是否已报过 —— 与固件 lid_logic 的 tilt_alerted 同义:一段持续倾斜只报一次 */
+  private tiltAlerted = false;
   // 手势状态机(镜像固件 lid_logic):接触上升沿记时,松手时按时长分类。
   private pressContact = false;
   private pressSinceMs = 0;
@@ -100,15 +102,20 @@ export class LidSensor {
       this.coldAlerted = false;
     }
 
-    // 倾倒:持续超 tilt_alert_ms 才报(瞬时倾斜不算)
+    // 倾倒:持续超 tilt_alert_ms 才报(瞬时倾斜不算)。
+    // **一段持续倾斜只报一次** —— 与固件 lid_logic 的 tilt_alerted 同义:
+    // 回正后复位,再倾斜才会重新计时/再报。若在报警后把 tiltSinceMs 清空,
+    // 倾倒仍在持续的下一 tick 会重新计时,于是每 tilt_alert_ms 重发一次
+    // (tilt_alert 是紧急事件,会立刻单独发帧 → 持续倾倒时每 2s 喷一帧)。
     if (w.tiltDeg >= IMU_THRESH.tilt_deg && w.motion === 'tilt') {
       if (this.tiltSinceMs === null) this.tiltSinceMs = nowMs;
-      if (nowMs - this.tiltSinceMs >= ALERT.tilt_alert_ms) {
+      if (!this.tiltAlerted && nowMs - this.tiltSinceMs >= ALERT.tilt_alert_ms) {
         events.push(this.event(nowMs, 'tilt_alert', { confidence: 0.9 }));
-        this.tiltSinceMs = null; // 触发后重置,避免持续重发
+        this.tiltAlerted = true;
       }
     } else {
       this.tiltSinceMs = null;
+      this.tiltAlerted = false;
     }
 
     // 低电

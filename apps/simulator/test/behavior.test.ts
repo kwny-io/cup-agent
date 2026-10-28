@@ -141,6 +141,107 @@ test('手势非紧急:随下次上报捎带(不即时单独发)', () => {
   assert.ok(gestureFrames[0]!.lid, '手势随常规上报捎带(帧内带杯盖遥测)');
 });
 
+// ── 离座:off_base 的 120s 延迟必须从**本次**离开起算 ────────────────
+// 回归自 2026-10-19 实测:上一轮"短暂拿起"排下的定时器会消费下一轮的待定标记,
+// 于是第二次真正带走时 off_base 从**第一次**拿起起算 → 提前 80s 误报。
+
+test('离座:短暂拿起 + 放回 + 再拿走,off_base 从第二次离开起算 120s', () => {
+  const events: CupEvent[] = [];
+  const T0 = Date.UTC(2026, 9, 7);
+  const engine = new Engine({
+    config: { seed: 1, scale: 1, startMs: T0, reportMs: 20_000, verbose: false },
+    steps: [],
+    sink: (f) => events.push(...f.events),
+  });
+  const run = (ms: number): void => {
+    for (let t = 0; t < ms; t += 20) engine.step(20);
+  };
+  engine.world.setOnBase(false);
+  run(60_000); // 拿走 60s(短拿)
+  engine.world.setOnBase(true);
+  run(20_000); // 放回
+  engine.world.setOnBase(false);
+  run(200_000); // 这次真正带走
+
+  const offs = events.filter((e) => e.type === 'off_base');
+  assert.equal(offs.length, 1, '只报一次');
+  assert.equal(offs[0]!.ts - T0, 200_020, '应在第二次离开后 120s(200s)才报,而非从第一次拿起算起');
+});
+
+test('离座:两次独立的离开各报一次 off_base', () => {
+  const events: CupEvent[] = [];
+  const T0 = Date.UTC(2026, 9, 7);
+  const engine = new Engine({
+    config: { seed: 1, scale: 1, startMs: T0, reportMs: 20_000, verbose: false },
+    steps: [],
+    sink: (f) => events.push(...f.events),
+  });
+  const run = (ms: number): void => {
+    for (let t = 0; t < ms; t += 20) engine.step(20);
+  };
+  engine.world.setOnBase(false);
+  run(60_000); // 短拿
+  engine.world.setOnBase(true);
+  run(20_000);
+  engine.world.setOnBase(false);
+  run(200_000); // 第一次离开 → 报
+  engine.world.setOnBase(true);
+  run(20_000);
+  engine.world.setOnBase(false);
+  run(200_000); // 第二次离开 → 再报
+
+  assert.equal(count(events, 'off_base'), 2, '两次离开各报一次');
+});
+
+// ── 倾倒报警:一段持续倾斜只报一次(镜像固件 lid_logic 的 tilt_alerted)──
+// 回归自 2026-10-19 实测:tilt_alert 是紧急事件(即时单独发帧),旧实现把 tiltSinceMs
+// 在报警后清空,倾倒仍在持续时会每 ALERT.tilt_alert_ms(2s)重发一次,持续倾倒 10s 喷 4 帧。
+
+test('倾倒:持续倾斜超 2s 只报一次 tilt_alert(不按 2s 重发)', () => {
+  const events: CupEvent[] = [];
+  const engine = new Engine({
+    config: { seed: 1, scale: 1, startMs: Date.UTC(2026, 9, 7), reportMs: 60_000, verbose: false },
+    steps: [],
+    sink: (f) => events.push(...f.events),
+  });
+  engine.world.setMotion('tilt', 50, 90);
+  for (let i = 0; i < 500; i++) engine.step(20); // 持续倾倒 10s
+
+  assert.equal(count(events, 'tilt_alert'), 1, '一段倾倒只报一次,不按 2s 周期重发');
+});
+
+test('倾倒:回正后再倾倒,重新计时并再报一次', () => {
+  const events: CupEvent[] = [];
+  const engine = new Engine({
+    config: { seed: 1, scale: 1, startMs: Date.UTC(2026, 9, 7), reportMs: 60_000, verbose: false },
+    steps: [],
+    sink: (f) => events.push(...f.events),
+  });
+  engine.world.setMotion('tilt', 50, 90);
+  for (let i = 0; i < 500; i++) engine.step(20); // 第一段倾倒
+  engine.world.setMotion('idle');
+  for (let i = 0; i < 50; i++) engine.step(20); // 回正
+  engine.world.setMotion('tilt', 50, 90);
+  for (let i = 0; i < 500; i++) engine.step(20); // 第二段倾倒
+
+  assert.equal(count(events, 'tilt_alert'), 2, '回正后的新一段倾倒应重新报警');
+});
+
+test('倾倒:短于 2s 的瞬时倾斜不报警', () => {
+  const events: CupEvent[] = [];
+  const engine = new Engine({
+    config: { seed: 1, scale: 1, startMs: Date.UTC(2026, 9, 7), reportMs: 60_000, verbose: false },
+    steps: [],
+    sink: (f) => events.push(...f.events),
+  });
+  engine.world.setMotion('tilt', 50, 90);
+  for (let i = 0; i < 75; i++) engine.step(20); // 倾斜 1.5s
+  engine.world.setMotion('idle');
+  for (let i = 0; i < 200; i++) engine.step(20);
+
+  assert.equal(count(events, 'tilt_alert'), 0, '瞬时倾斜不算倾倒');
+});
+
 test('手势:过短接触(<40ms)视为抖动,不产生事件', () => {
   const events: CupEvent[] = [];
   const engine = new Engine({
